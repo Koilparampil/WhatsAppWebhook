@@ -37,9 +37,12 @@ class Settings(BaseSettings):
     )
     wa_app_secret: str = Field(description="Meta App Secret used to validate X-Hub-Signature-256.")
     wa_access_token: str = Field(default="", description="Permanent System User token (media download).")
-    wa_graph_api_version: str = "v26.0"
+    wa_graph_api_version: str = "v27.0"
     wa_graph_base_url: str = "https://graph.facebook.com"
     wa_phone_number_id: str = Field(default="", description="Optional: only process this business number.")
+    wa_waba_id: str = Field(
+        default="", description="Messaging account (WABA) id, used by the meta-check CLI."
+    )
     wa_allow_unsigned: bool = Field(
         default=False, description="DEV ONLY: accept POSTs without a valid signature."
     )
@@ -87,8 +90,11 @@ class Settings(BaseSettings):
     mail_timezone: str = "UTC"
     mail_fallback_reply_to: str = ""
     mail_max_message_bytes: int = Field(
-        default=25_000_000,
-        description="Upper bound for one encoded email; larger media is split across several emails.",
+        default=32_000_000,
+        description=(
+            "Upper bound for one encoded email (Exchange Online default send limit is 35 MB);"
+            " larger media is split across several emails."
+        ),
     )
     mail_split_large_media: bool = True
     alert_on_dead_letter: bool = True

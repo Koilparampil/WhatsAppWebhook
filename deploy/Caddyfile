@@ -1,0 +1,33 @@
+# Caddy configuration for the WhatsApp email forwarder.
+# deploy/install.sh replaces __DOMAIN__ and __ACME_EMAIL__ and installs this as /etc/caddy/Caddyfile.
+#
+# Caddy obtains and renews the TLS certificate automatically (Let's Encrypt, with ZeroSSL as fallback)
+# as long as the DNS A record for the domain points at this VM and ports 80/443 are reachable.
+
+{
+	email __ACME_EMAIL__
+}
+
+__DOMAIN__ {
+	# Meta webhook payloads are at most 3 MB; leave headroom and reject anything bigger.
+	request_body {
+		max_size 4MB
+	}
+
+	log {
+		output stderr
+		format json
+	}
+
+	# Only the webhook path reaches the application.
+	handle /webhook {
+		reverse_proxy 127.0.0.1:8000 {
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# Everything else (scanners, browsers) gets a bare 404.
+	handle {
+		respond 404
+	}
+}

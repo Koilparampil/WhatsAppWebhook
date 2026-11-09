@@ -104,7 +104,7 @@ def test_end_to_end_image_with_crm_match(tmp_path):
         )
         data = b"\xff\xd8" + b"p" * 4000
         digest = hashlib.sha256(data).digest()
-        respx.get("https://graph.facebook.com/v26.0/1385223789055226").mock(
+        respx.get("https://graph.facebook.com/v27.0/1385223789055226").mock(
             return_value=httpx.Response(
                 200,
                 json={

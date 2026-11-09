@@ -123,6 +123,88 @@ def cmd_purge(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_meta_check(args: argparse.Namespace) -> int:
+    """Verify the WhatsApp token, list business numbers and webhook subscriptions."""
+    from app.whatsapp import admin
+
+    settings = load_settings()
+    if not settings.wa_access_token:
+        print("WA_ACCESS_TOKEN is empty")
+        return 1
+    common = {
+        "base_url": settings.wa_graph_base_url,
+        "version": settings.wa_graph_api_version,
+        "token": settings.wa_access_token,
+    }
+    rc = 0
+    async with httpx.AsyncClient() as http:
+        try:
+            info = await admin.debug_token(http, **common)
+            scopes = info.get("scopes") or []
+            expires = info.get("expires_at")
+            print(f"token: type={info.get('type')} valid={info.get('is_valid')} app_id={info.get('app_id')}")
+            print(f"       expires_at={'never' if expires in (0, None) else _fmt_ts(float(expires))}")
+            print(f"       scopes={scopes}")
+            for needed in ("whatsapp_business_messaging", "whatsapp_business_management"):
+                if needed not in scopes:
+                    print(f"       MISSING scope {needed}")
+                    rc = 2
+        except admin.GraphAdminError as exc:
+            print(f"token: {exc}")
+            rc = 2
+        if settings.wa_waba_id:
+            try:
+                numbers = await admin.phone_numbers(http, waba_id=settings.wa_waba_id, **common)
+                for n in numbers:
+                    print(
+                        f"number: id={n.get('id')} {n.get('display_phone_number')} "
+                        f"name={n.get('verified_name')!r} status={n.get('status')}"
+                        f" quality={n.get('quality_rating')}"
+                    )
+                apps = await admin.subscribed_apps(http, waba_id=settings.wa_waba_id, **common)
+                if not apps:
+                    print("subscribed apps: NONE - run `whatsapp-webhook meta-subscribe`")
+                    rc = max(rc, 2)
+                for a in apps:
+                    app_info = a.get("whatsapp_business_api_data", a)
+                    print(f"subscribed app: {app_info}")
+            except admin.GraphAdminError as exc:
+                print(f"waba: {exc}")
+                rc = 2
+        else:
+            print("WA_WABA_ID not set: skipping phone number and subscription checks")
+        if settings.wa_phone_number_id:
+            try:
+                cfg = await admin.webhook_configuration(
+                    http, phone_number_id=settings.wa_phone_number_id, **common
+                )
+                override = (cfg.get("webhook_configuration") or {}).get("application")
+                print(f"phone {settings.wa_phone_number_id}: webhook override={override or 'none'}")
+            except admin.GraphAdminError as exc:
+                print(f"phone: {exc}")
+    return rc
+
+
+async def cmd_meta_subscribe(args: argparse.Namespace) -> int:
+    """Subscribe this app to the Messaging account's webhooks (idempotent)."""
+    from app.whatsapp import admin
+
+    settings = load_settings()
+    if not (settings.wa_access_token and settings.wa_waba_id):
+        print("WA_ACCESS_TOKEN and WA_WABA_ID are required")
+        return 1
+    async with httpx.AsyncClient() as http:
+        ok = await admin.subscribe_app(
+            http,
+            base_url=settings.wa_graph_base_url,
+            version=settings.wa_graph_api_version,
+            token=settings.wa_access_token,
+            waba_id=settings.wa_waba_id,
+        )
+    print("subscribed" if ok else "subscription call did not return success=true")
+    return 0 if ok else 2
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -156,6 +238,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("stats", help="queue statistics")
     p = sub.add_parser("purge", help="delete finished items older than N days")
     p.add_argument("--days", type=int, default=30)
+    sub.add_parser(
+        "meta-check", help="verify the WhatsApp token scopes, phone numbers and webhook subscription"
+    )
+    sub.add_parser("meta-subscribe", help="subscribe the app to the Messaging account (WABA) webhooks")
     sub.add_parser("run", help="run the web service with uvicorn (systemd uses this)")
     args = parser.parse_args(argv)
 
@@ -169,6 +255,8 @@ def main(argv: list[str] | None = None) -> int:
         "replay-failed": cmd_replay_failed,
         "stats": cmd_stats,
         "purge": cmd_purge,
+        "meta-check": cmd_meta_check,
+        "meta-subscribe": cmd_meta_subscribe,
         "run": cmd_run,
     }
     handler = handlers[args.command]

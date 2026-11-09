@@ -1,7 +1,22 @@
 # Plan: WhatsApp Business → Email forwarder with VShipCRM Reply-To lookup
 
-Status: **DRAFT – awaiting your confirmation. No code has been written.**
+Status: **Approved and in implementation** (plan confirmed 2026-11-09; see the decisions log below).
 Date: 2026-11-09
+
+## 0. Decisions log
+
+| Topic | Decision | Effect |
+|---|---|---|
+| Repository | github.com/Koilparampil/WhatsAppWebhook (branch `main`) | all code, deploy assets and docs live here |
+| Email system | Microsoft 365 (Exchange Online); recipients are inside the same tenant; DNS at Network Solutions | sending path researched: **Microsoft Graph sendMail** recommended, OAuth SMTP AUTH kept as fallback, Direct Send ruled out (Google Cloud blocks outbound port 25). See docs/setup-microsoft365-email.md |
+| CRM scope | existing VShipCRM service account; search the **Customer** list only; phone numbers are mostly US | `CRM_ENTITIES=Customer`, `CRM_DEFAULT_REGION=US` |
+| Reply-To | when a customer matches, **all** of its email addresses go into Reply-To | `CRM_REPLY_TO_ALL_EMAILS=true` |
+| Meta | app, WhatsApp Business Account and business number exist; System User token guide needed | docs/setup-meta-whatsapp.md, `meta-check` / `meta-subscribe` CLI |
+| Media | attach everything with **no size cap**; media that exceeds the email size limit is **split across several emails** | numbered parts `name.001`, `name.002`… with rebuild instructions; `MAIL_MAX_MESSAGE_BYTES` defaults to 32 MB (Exchange Online default send limit is 35 MB) |
+| GCP | project does not exist yet; user runs the provisioning scripts | docs/setup-gcp.md, deploy/gcp/provision.sh, deploy/gcp/deploy.sh |
+| Retries | failed sends retry for **10 minutes**, then dead-letter and an **alert email** | `WORKER_RETRY_WINDOW_SECONDS=600`, `ALERT_ON_DEAD_LETTER=true` |
+| Graph API version | v27.0 (released 4 Nov 2026) | `WA_GRAPH_API_VERSION=v27.0` |
+| Media download failure | treated as a retriable failure of the whole message (no email without its attachment); dead-letter + alert after the window | protects the "attach all media" requirement; `replay-failed` re-sends |
 
 ---
 

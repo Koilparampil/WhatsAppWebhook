@@ -1,0 +1,48 @@
+[Unit]
+Description=WhatsApp to email forwarder (webhook + queue worker)
+Documentation=https://github.com/Koilparampil/WhatsAppWebhook
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=whwebhook
+Group=whwebhook
+WorkingDirectory=/opt/whatsapp-webhook
+EnvironmentFile=/etc/whatsapp-webhook/env
+ExecStart=/opt/whatsapp-webhook/.venv/bin/python -m app.cli run
+Restart=always
+RestartSec=3
+# Give the worker time to finish an in-flight email on stop (matches WORKER_SHUTDOWN_GRACE_SECONDS + margin).
+TimeoutStopSec=40
+KillSignal=SIGTERM
+
+# Resource ceiling: well above the ~90 MB the service normally uses, well below the VM's 1 GB.
+MemoryMax=400M
+TasksMax=128
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/whatsapp-webhook
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

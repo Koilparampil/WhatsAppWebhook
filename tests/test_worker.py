@@ -129,7 +129,7 @@ async def test_permanent_failure_for_corrupt_payload(tmp_path, clock):
 async def test_media_message_is_downloaded_attached_and_spool_cleaned(tmp_path, clock):
     data = b"\xff\xd8" + b"j" * 3000
     digest = hashlib.sha256(data).digest()
-    respx.get("https://graph.facebook.com/v26.0/1385223789055226").mock(
+    respx.get("https://graph.facebook.com/v27.0/1385223789055226").mock(
         return_value=httpx.Response(
             200,
             json={"url": "https://lookaside.fbsbx.com/x", "mime_type": "image/jpeg", "file_size": len(data)},
@@ -156,7 +156,7 @@ async def test_media_message_is_downloaded_attached_and_spool_cleaned(tmp_path, 
 
 @respx.mock
 async def test_media_failure_is_retried_not_sent_without_attachment(tmp_path, clock):
-    respx.get("https://graph.facebook.com/v26.0/1385223789055226").mock(return_value=httpx.Response(503))
+    respx.get("https://graph.facebook.com/v27.0/1385223789055226").mock(return_value=httpx.Response(503))
     transport = FakeTransport()
     worker, store, _ = make_worker(tmp_path, clock, transport)
     store.enqueue(KIND_MESSAGE, "wamid.IMAGE123", {"envelope": load_payload("image")}, clock())

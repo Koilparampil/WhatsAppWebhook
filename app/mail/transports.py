@@ -253,7 +253,9 @@ class GraphTransport:
             else:
                 await self._upload_large(draft_id, name, data, headers)
 
-        r = await self._request("POST", self._url(f"/messages/{draft_id}/send"), headers=headers)
+        r = await self._request(
+            "POST", self._url(f"/messages/{draft_id}/send"), headers={**headers, "Content-Length": "0"}
+        )
         if r.status_code not in (202, 200):
             self._raise_for(r, "send draft")
         return message["Message-ID"] or draft_id

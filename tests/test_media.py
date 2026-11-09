@@ -29,7 +29,7 @@ def _ref(**kw) -> MediaRef:
 async def test_download_verifies_digest_and_size(tmp_path):
     data = b"\xff\xd8" + b"x" * 5000
     digest = hashlib.sha256(data).digest()
-    info = respx.get(f"{GRAPH}/v26.0/1385223789055226").mock(
+    info = respx.get(f"{GRAPH}/v27.0/1385223789055226").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -49,7 +49,7 @@ async def test_download_verifies_digest_and_size(tmp_path):
             wamid="wamid.ABC",
             access_token="tok",
             graph_base_url=GRAPH,
-            api_version="v26.0",
+            api_version="v27.0",
             dest_dir=tmp_path / "spool",
         )
     assert info.calls[0].request.headers["Authorization"] == "Bearer tok"
@@ -64,7 +64,7 @@ async def test_download_verifies_digest_and_size(tmp_path):
 
 @respx.mock
 async def test_download_size_mismatch_is_retriable(tmp_path):
-    respx.get(f"{GRAPH}/v26.0/1385223789055226").mock(
+    respx.get(f"{GRAPH}/v27.0/1385223789055226").mock(
         return_value=httpx.Response(200, json={"url": LOOKASIDE, "mime_type": "image/jpeg", "file_size": 999})
     )
     respx.get(LOOKASIDE).mock(return_value=httpx.Response(200, content=b"short"))
@@ -76,7 +76,7 @@ async def test_download_size_mismatch_is_retriable(tmp_path):
                 wamid="w",
                 access_token="tok",
                 graph_base_url=GRAPH,
-                api_version="v26.0",
+                api_version="v27.0",
                 dest_dir=tmp_path,
             )
     assert exc.value.retriable is True
@@ -85,7 +85,7 @@ async def test_download_size_mismatch_is_retriable(tmp_path):
 
 @respx.mock
 async def test_download_graph_error_and_missing_token(tmp_path):
-    respx.get(f"{GRAPH}/v26.0/1385223789055226").mock(
+    respx.get(f"{GRAPH}/v27.0/1385223789055226").mock(
         return_value=httpx.Response(
             400,
             json={
@@ -101,7 +101,7 @@ async def test_download_graph_error_and_missing_token(tmp_path):
                 wamid="w",
                 access_token="tok",
                 graph_base_url=GRAPH,
-                api_version="v26.0",
+                api_version="v27.0",
                 dest_dir=tmp_path,
             )
         assert exc.value.status_code == 400
@@ -113,7 +113,7 @@ async def test_download_graph_error_and_missing_token(tmp_path):
                 wamid="w",
                 access_token="",
                 graph_base_url=GRAPH,
-                api_version="v26.0",
+                api_version="v27.0",
                 dest_dir=tmp_path,
             )
 
