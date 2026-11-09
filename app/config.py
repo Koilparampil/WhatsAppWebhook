@@ -6,6 +6,7 @@ logged; ``Settings.redacted()`` is what the CLI prints.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -108,6 +109,10 @@ class Settings(BaseSettings):
     store_retention_days: int = 30
     worker_enabled: bool = True
     worker_retry_window_seconds: int = 600
+    alert_retry_window_seconds: int = Field(
+        default=86400,
+        description="Alert emails keep retrying this long so a mail outage is still reported afterwards.",
+    )
     worker_base_delay_seconds: float = 15.0
     worker_max_delay_seconds: float = 120.0
     worker_poll_seconds: float = 2.0
@@ -208,6 +213,13 @@ class Settings(BaseSettings):
         return out
 
 
-def load_settings(**overrides: object) -> Settings:
-    """Load settings from the environment (and .env), applying explicit overrides."""
+def load_settings(env_file: str | Path | None = None, **overrides: object) -> Settings:
+    """Load settings from the environment, applying explicit overrides.
+
+    ``env_file`` (or the ``WHATSAPP_WEBHOOK_ENV_FILE`` variable) points at a dotenv-style file such as
+    ``/etc/whatsapp-webhook/env``; real environment variables still take precedence over it.
+    """
+    env_file = env_file or os.environ.get("WHATSAPP_WEBHOOK_ENV_FILE") or None
+    if env_file:
+        return Settings(_env_file=env_file, **overrides)  # type: ignore[arg-type]
     return Settings(**overrides)  # type: ignore[arg-type]

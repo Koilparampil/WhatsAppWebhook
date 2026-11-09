@@ -143,6 +143,12 @@ Only outbound HTTPS to `login.microsoftonline.com`, `graph.microsoft.com` and `o
 messages per minute and 10,000 recipients per day per mailbox; 150 MB uploaded per 5 minutes per
 app and mailbox. The worker sends one email at a time and backs off on HTTP 429.
 
+Two Graph-specific behaviours to know: emails whose attachment is 3 MB or larger go through a draft
+message plus an upload session, and Exchange then assigns its own `Message-ID`, so the forwarder's
+deterministic ids and the `In-Reply-To` threading of quoted replies apply only to smaller emails on
+this transport (they always apply on SMTP). Graph also keeps a copy of every sent email in the relay
+mailbox's Sent Items (section 2e).
+
 ### 2g. Fallback: SMTP AUTH with OAuth (only if Graph is blocked by policy)
 
 1. Entra app as above, but under **API permissions > APIs my organization uses > Office 365 Exchange

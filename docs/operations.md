@@ -17,14 +17,18 @@ index, the last successful send and the last error.
 
 ## Operator CLI
 
-Run the CLI as the service user with the production environment file:
+`install.sh` places a wrapper at `/usr/local/bin/whatsapp-webhook` that runs the CLI as the service
+user with the production environment file (it calls `sudo` itself when needed). The examples below
+use `wh` as a short alias for it:
 
 ```bash
-alias wh='sudo -u whwebhook env $(sudo grep -v "^#" /etc/whatsapp-webhook/env | xargs) /opt/whatsapp-webhook/.venv/bin/python -m app.cli'
+alias wh=whatsapp-webhook
 wh check-config          # effective configuration, secrets redacted
 wh test-crm              # log in to VShipCRM, build the customer index, report counts
 wh lookup +16505551234   # what the CRM lookup returns for a number
 wh test-email            # send a test email through the configured transport
+wh meta-check            # WhatsApp token scopes, business numbers, webhook subscription
+wh meta-subscribe        # subscribe the app to the Messaging account webhooks
 wh stats                 # queue counters and the next pending items
 wh list-failed           # dead-letter list
 wh replay-failed <key>   # re-queue one dead-lettered message (or: all)

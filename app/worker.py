@@ -140,7 +140,12 @@ class Worker:
             self.settings.worker_max_delay_seconds,
         )
         next_at = now + delay
-        if next_at - first > self.settings.worker_retry_window_seconds:
+        window = (
+            self.settings.alert_retry_window_seconds
+            if item.kind == KIND_ALERT
+            else self.settings.worker_retry_window_seconds
+        )
+        if next_at - first > window:
             self._dead_letter(item, f"gave up after {item.attempts} attempt(s): {error}")
             return
         self.last_error = error
@@ -200,11 +205,15 @@ class Worker:
                     request_timeout=self.settings.wa_media_timeout_seconds,
                 )
             emails = build_emails(msg, lookup, media, self.settings)
-            sent = 0
-            for outgoing in emails:
+            # Parts already delivered by an earlier attempt are not sent again (chunking is deterministic).
+            sent = min(item.emails_sent, len(emails))
+            if sent:
+                log.info("resuming %s at part %d/%d", msg.wamid, sent + 1, len(emails))
+            for outgoing in emails[sent:]:
                 await self.transport.send(outgoing.message)
                 sent += 1
                 if outgoing.part_count > 1:
+                    self.store.set_progress(item.id, sent)
                     log.info("sent part %d/%d for %s", outgoing.part_index, outgoing.part_count, msg.wamid)
             return ProcessOutcome(emails_sent=sent, lookup=lookup)
         finally:

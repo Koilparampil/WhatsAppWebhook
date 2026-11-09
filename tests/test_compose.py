@@ -177,3 +177,13 @@ def test_alert_email(settings):
     assert m["To"] == "ops@example.com, second@example.com"
     parsed = message_from_bytes(m.as_bytes(), policy=SMTP)
     assert parsed.get_content().strip() == "details here"
+
+
+def test_chunk_size_is_deterministic_and_bounded():
+    assert (
+        chunk_size_for(32_000_000, 10_000)
+        == chunk_size_for(32_000_000, 200_000)
+        == chunk_size_for(32_000_000)
+    )
+    with pytest.raises(ComposeError):
+        chunk_size_for(32_000_000, 300_000)

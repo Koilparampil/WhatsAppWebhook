@@ -156,6 +156,11 @@ class Store:
                 (STATUS_DONE, now, emails_sent, item_id),
             )
 
+    def set_progress(self, item_id: int, emails_sent: int) -> None:
+        """Record how many emails (parts) of an item have been sent so a retry can resume."""
+        with self._lock:
+            self._conn.execute("UPDATE queue SET emails_sent = ? WHERE id = ?", (emails_sent, item_id))
+
     def mark_retry(self, item_id: int, next_attempt_at: float, error: str) -> None:
         with self._lock:
             self._conn.execute(
@@ -206,13 +211,13 @@ class Store:
             if key is None:
                 cur = self._conn.execute(
                     "UPDATE queue SET status = ?, next_attempt_at = ?, first_attempt_at = NULL,"
-                    " attempts = 0, finished_at = NULL WHERE status = ?",
+                    " attempts = 0, emails_sent = 0, finished_at = NULL WHERE status = ?",
                     (STATUS_PENDING, now, STATUS_FAILED),
                 )
             else:
                 cur = self._conn.execute(
                     "UPDATE queue SET status = ?, next_attempt_at = ?, first_attempt_at = NULL,"
-                    " attempts = 0, finished_at = NULL WHERE key = ? AND status = ?",
+                    " attempts = 0, emails_sent = 0, finished_at = NULL WHERE key = ? AND status = ?",
                     (STATUS_PENDING, now, key, STATUS_FAILED),
                 )
             return cur.rowcount

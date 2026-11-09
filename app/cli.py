@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 from datetime import UTC, datetime
@@ -224,6 +225,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="whatsapp-webhook", description="WhatsApp → email forwarder operator tools"
     )
+    parser.add_argument(
+        "--env-file",
+        default=None,
+        help="dotenv-style settings file (default: $WHATSAPP_WEBHOOK_ENV_FILE, else the process environment)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("check-config", help="print the effective configuration (secrets redacted)")
     sub.add_parser("test-crm", help="log in to VShipCRM and build the customer index once")
@@ -244,6 +250,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("meta-subscribe", help="subscribe the app to the Messaging account (WABA) webhooks")
     sub.add_parser("run", help="run the web service with uvicorn (systemd uses this)")
     args = parser.parse_args(argv)
+    if args.env_file:
+        os.environ["WHATSAPP_WEBHOOK_ENV_FILE"] = args.env_file
 
     configure_logging("WARNING")
     handlers = {

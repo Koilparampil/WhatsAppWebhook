@@ -30,6 +30,10 @@ BASE64_ENCODED_LINE = 78  # 76 chars + CRLF
 ATTACHMENT_HEADER_OVERHEAD = 1024
 SAFETY_MARGIN = 8 * 1024
 MIN_CHUNK_BYTES = 512 * 1024
+# Space reserved for headers and the text/HTML bodies when splitting. Using a fixed reserve (rather
+# than the measured body size) keeps the chunk boundaries identical across retries, so a message
+# whose later parts failed can resume without re-sending or mis-cutting earlier parts.
+BODY_RESERVE = 256 * 1024
 
 
 class ComposeError(Exception):
@@ -50,9 +54,15 @@ def encoded_attachment_size(raw_size: int) -> int:
     return lines * BASE64_ENCODED_LINE + ATTACHMENT_HEADER_OVERHEAD
 
 
-def chunk_size_for(limit: int, base_size: int) -> int:
-    """Largest raw chunk whose encoded form fits in ``limit`` next to a ``base_size`` message."""
-    available = limit - base_size - ATTACHMENT_HEADER_OVERHEAD - SAFETY_MARGIN
+def chunk_size_for(limit: int, base_size: int = 0) -> int:
+    """Largest raw chunk whose base64 form fits in ``limit`` next to a message body.
+
+    Deterministic for a given ``limit``: the body is assumed to take at most ``BODY_RESERVE`` bytes.
+    ``base_size`` is only validated against that reserve.
+    """
+    if base_size > BODY_RESERVE:
+        raise ComposeError(f"email body ({base_size} bytes) exceeds the {BODY_RESERVE}-byte reserve")
+    available = limit - BODY_RESERVE - ATTACHMENT_HEADER_OVERHEAD - SAFETY_MARGIN
     lines = available // BASE64_ENCODED_LINE
     return max(lines * BASE64_RAW_LINE, MIN_CHUNK_BYTES)
 
@@ -348,8 +358,9 @@ def build_emails(
             if part_count == 1:
                 data = Path(media.path).read_bytes()
                 attachment_name = media.filename
-                maintype, _, subtype = (media.mime_type or "application/octet-stream").partition("/")
-                if not subtype:
+                mime = (media.mime_type or "application/octet-stream").split(";")[0].strip().lower()
+                maintype, _, subtype = mime.partition("/")
+                if not subtype or not re.fullmatch(r"[a-z0-9][a-z0-9!#$&^_.+-]*", maintype):
                     maintype, subtype = "application", "octet-stream"
                 message.add_attachment(data, maintype=maintype, subtype=subtype, filename=attachment_name)
             else:

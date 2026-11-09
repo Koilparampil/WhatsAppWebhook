@@ -95,6 +95,19 @@ fi
 chown root:"$SERVICE_USER" "$ENV_FILE"
 chmod 640 "$ENV_FILE"
 
+log "Installing the operator wrapper /usr/local/bin/whatsapp-webhook"
+cat > /usr/local/bin/whatsapp-webhook <<EOF
+#!/usr/bin/env bash
+# Runs the operator CLI as the service user with the production environment file.
+set -euo pipefail
+if [[ \$EUID -ne 0 ]]; then
+  exec sudo "\$0" "\$@"
+fi
+cd "$APP_DIR"
+exec runuser -u "$SERVICE_USER" -- "$APP_DIR/.venv/bin/python" -m app.cli --env-file "$ENV_FILE" "\$@"
+EOF
+chmod 755 /usr/local/bin/whatsapp-webhook
+
 log "Installing systemd unit"
 install -m 644 "$APP_DIR/deploy/systemd/whatsapp-webhook.service" /etc/systemd/system/whatsapp-webhook.service
 systemctl daemon-reload
@@ -149,7 +162,7 @@ if grep -q 'CHANGE_ME' "$ENV_FILE"; then
   echo "The env file still contains CHANGE_ME placeholders: $ENV_FILE"
   echo "Edit it, then run:  systemctl restart whatsapp-webhook && journalctl -u whatsapp-webhook -f"
 else
-  if (cd "$APP_DIR" && set -a && . "$ENV_FILE" && set +a && .venv/bin/python -m app.cli check-config >/dev/null); then
+  if /usr/local/bin/whatsapp-webhook check-config >/dev/null; then
     systemctl restart whatsapp-webhook
     sleep 2
     systemctl --no-pager --lines=5 status whatsapp-webhook || true
@@ -164,5 +177,8 @@ Done. Useful commands:
   journalctl -u whatsapp-webhook -f        # application logs
   journalctl -u caddy -f                   # TLS / proxy logs
   curl -s "https://$DOMAIN/webhook?hub.mode=subscribe&hub.verify_token=<WA_VERIFY_TOKEN>&hub.challenge=123"
-  sudo -u $SERVICE_USER env \$(grep -v '^#' $ENV_FILE | xargs) $APP_DIR/.venv/bin/python -m app.cli test-crm
+  whatsapp-webhook check-config            # operator CLI (runs as $SERVICE_USER with $ENV_FILE)
+  whatsapp-webhook test-crm
+  whatsapp-webhook test-email
+  whatsapp-webhook meta-check
 EOF
