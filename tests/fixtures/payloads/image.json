@@ -1,0 +1,42 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "102290129340398",
+      "changes": [
+        {
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "15550783881",
+              "phone_number_id": "106540352242922"
+            },
+            "contacts": [
+              {
+                "profile": { "name": "Sheena Nelson" },
+                "wa_id": "16505551234",
+                "user_id": "US.13491208655302741918"
+              }
+            ],
+            "messages": [
+              {
+                "from": "16505551234",
+                "from_user_id": "US.13491208655302741918",
+                "id": "wamid.IMAGE123",
+                "timestamp": "1749416400",
+                "type": "image",
+                "image": {
+                  "caption": "Here is the damaged box",
+                  "mime_type": "image/jpeg",
+                  "sha256": "n4JhtvXrAtOhj3S1ogmE6Jo1lDmhJLmz3+1Qf1hQg+0=",
+                  "id": "1385223789055226"
+                }
+              }
+            ]
+          },
+          "field": "messages"
+        }
+      ]
+    }
+  ]
+}

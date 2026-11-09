@@ -1,0 +1,81 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "102290129340398",
+      "changes": [
+        {
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": { "display_phone_number": "15550783881", "phone_number_id": "106540352242922" },
+            "contacts": [
+              { "profile": { "name": "Ana" }, "wa_id": "5215512345678", "user_id": "MX.1" },
+              { "profile": { "name": "Bob", "username": "bob_the_builder" }, "user_id": "US.2" }
+            ],
+            "messages": [
+              {
+                "from": "5215512345678",
+                "from_user_id": "MX.1",
+                "id": "wamid.LOC1",
+                "timestamp": "1749416600",
+                "type": "location",
+                "location": { "latitude": 19.4326, "longitude": -99.1332, "name": "Zócalo", "address": "CDMX" }
+              },
+              {
+                "from_user_id": "US.2",
+                "id": "wamid.CONTACTS1",
+                "timestamp": "1749416601",
+                "type": "contacts",
+                "contacts": [
+                  {
+                    "name": { "formatted_name": "Carlos Diaz", "first_name": "Carlos" },
+                    "phones": [{ "phone": "+1 (650) 555-9999", "type": "CELL", "wa_id": "16505559999" }],
+                    "emails": [{ "email": "carlos@example.com", "type": "WORK" }],
+                    "org": { "company": "Diaz Freight" }
+                  }
+                ]
+              },
+              {
+                "from": "5215512345678",
+                "from_user_id": "MX.1",
+                "id": "wamid.INTERACTIVE1",
+                "timestamp": "1749416602",
+                "type": "interactive",
+                "interactive": { "type": "button_reply", "button_reply": { "id": "yes-1", "title": "Yes, proceed" } },
+                "context": { "from": "15550783881", "id": "wamid.OUTBOUND1" }
+              },
+              {
+                "from": "5215512345678",
+                "from_user_id": "MX.1",
+                "id": "wamid.REACTION1",
+                "timestamp": "1749416603",
+                "type": "reaction",
+                "reaction": { "message_id": "wamid.OUTBOUND1", "emoji": "👍" }
+              },
+              {
+                "from": "5215512345678",
+                "from_user_id": "MX.1",
+                "id": "wamid.UNSUPPORTED1",
+                "timestamp": "1749416604",
+                "type": "unsupported",
+                "errors": [
+                  {
+                    "code": 131051,
+                    "title": "Message type unknown",
+                    "message": "Message type unknown",
+                    "error_data": { "details": "Message type is currently not supported." }
+                  }
+                ]
+              }
+            ]
+          },
+          "field": "messages"
+        },
+        {
+          "value": { "event": "APPROVED", "message_template_id": 1 },
+          "field": "message_template_status_update"
+        }
+      ]
+    }
+  ]
+}

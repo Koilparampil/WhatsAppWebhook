@@ -1,0 +1,30 @@
+# Secrets and local config
+.env
+*.env
+!.env.example
+deploy/*.local.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime data
+*.db
+*.db-wal
+*.db-shm
+spool/
+media/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
