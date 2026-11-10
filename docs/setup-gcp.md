@@ -54,14 +54,15 @@ gcloud config set compute/region us-east1
 gcloud config set compute/zone us-east1-b
 ```
 
-Any of `us-west1`, `us-east1`, `us-east1` is Free Tier eligible. Pick one and keep it.
+Any of `us-west1`, `us-central1`, `us-east1` is Free Tier eligible. This project uses `us-east1`
+(South Carolina), the closest of the three to New York; the scripts default to it.
 
 ## 4. Provision the VM
 
 From the repository on your computer:
 
 ```bash
-PROJECT_ID=<project-id> ADMIN_EMAILS=you@example.com bash deploy/gcp/provision.sh
+PROJECT_ID=<project-id> ADMIN_EMAILS=thevshipapp@gmail.com bash deploy/gcp/provision.sh
 ```
 
 The script is idempotent and does, in order: enable the Compute Engine API; turn on OS Login
@@ -86,7 +87,7 @@ no SSH port is open to the internet; `gcloud` defaults to `debian-12`, so the sc
 2. Deploy:
 
    ```bash
-   PROJECT_ID=<project-id> DOMAIN=<host> ACME_EMAIL=<admin email> bash deploy/gcp/deploy.sh
+   PROJECT_ID=<project-id> DOMAIN=whatsapphook.vship2000.com ACME_EMAIL=thevshipapp@gmail.com bash deploy/gcp/deploy.sh
    ```
 
    This copies the tracked files to the VM over IAP and runs `deploy/install.sh`, which installs

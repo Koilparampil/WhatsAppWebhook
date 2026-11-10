@@ -42,8 +42,8 @@ Meta WhatsApp Cloud API ──HTTPS──► Caddy ──► FastAPI /webhook �
 ## Quick start (deployment)
 
 ```bash
-# 1. Create the VM, static IP and firewall rules (run on your machine, gcloud logged in)
-PROJECT_ID=<project> bash deploy/gcp/provision.sh
+# 1. Create the VM, static IP and firewall rules (run on your machine, gcloud logged in as the project owner)
+PROJECT_ID=<project> ADMIN_EMAILS=thevshipapp@gmail.com bash deploy/gcp/provision.sh
 
 # 2. Create the DNS A record at Network Solutions, wait for it to resolve, then deploy
 PROJECT_ID=<project> DOMAIN=whatsapphook.vship2000.com ACME_EMAIL=thevshipapp@gmail.com bash deploy/gcp/deploy.sh
@@ -53,7 +53,7 @@ gcloud compute ssh whatsapp-webhook --zone us-east1-b --tunnel-through-iap
 sudo nano /etc/whatsapp-webhook/env      # replace every CHANGE_ME
 sudo systemctl restart whatsapp-webhook && journalctl -u whatsapp-webhook -f
 
-# 4. Point Meta at https://<host>/webhook with your verify token and subscribe to "messages"
+# 4. Point Meta at https://whatsapphook.vship2000.com/webhook with your verify token and subscribe to "messages"
 ```
 
 ## Local development
