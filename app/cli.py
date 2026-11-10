@@ -136,6 +136,7 @@ async def cmd_meta_check(args: argparse.Namespace) -> int:
         "base_url": settings.wa_graph_base_url,
         "version": settings.wa_graph_api_version,
         "token": settings.wa_access_token,
+        "app_secret": settings.wa_app_secret,
     }
     rc = 0
     async with httpx.AsyncClient() as http:
@@ -157,9 +158,18 @@ async def cmd_meta_check(args: argparse.Namespace) -> int:
             try:
                 numbers = await admin.phone_numbers(http, waba_id=settings.wa_waba_id, **common)
                 for n in numbers:
+                    details: dict = {}
+                    if n.get("id"):
+                        try:
+                            details = await admin.phone_number_details(
+                                http, phone_number_id=str(n["id"]), **common
+                            )
+                        except admin.GraphAdminError as exc:
+                            details = {"status": f"? ({exc})"}
                     print(
                         f"number: id={n.get('id')} {n.get('display_phone_number')} "
-                        f"name={n.get('verified_name')!r} status={n.get('status')}"
+                        f"name={n.get('verified_name')!r} status={details.get('status')}"
+                        f" verification={details.get('code_verification_status')}"
                         f" quality={n.get('quality_rating')}"
                     )
                 apps = await admin.subscribed_apps(http, waba_id=settings.wa_waba_id, **common)
@@ -176,7 +186,7 @@ async def cmd_meta_check(args: argparse.Namespace) -> int:
             print("WA_WABA_ID not set: skipping phone number and subscription checks")
         if settings.wa_phone_number_id:
             try:
-                cfg = await admin.webhook_configuration(
+                cfg = await admin.phone_number_details(
                     http, phone_number_id=settings.wa_phone_number_id, **common
                 )
                 override = (cfg.get("webhook_configuration") or {}).get("application")
@@ -201,6 +211,7 @@ async def cmd_meta_subscribe(args: argparse.Namespace) -> int:
             version=settings.wa_graph_api_version,
             token=settings.wa_access_token,
             waba_id=settings.wa_waba_id,
+            app_secret=settings.wa_app_secret,
         )
     print("subscribed" if ok else "subscription call did not return success=true")
     return 0 if ok else 2

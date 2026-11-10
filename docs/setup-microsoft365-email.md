@@ -196,7 +196,10 @@ Three more operational notes:
 ### 2g. Fallback: SMTP AUTH with OAuth (only if Graph is blocked by policy)
 
 1. Entra app as above, but under **API permissions > APIs my organization uses > Office 365 Exchange
-   Online > Application permissions** add **SMTP.SendAsApp** and grant admin consent.
+   Online > Application permissions** add **SMTP.SendAsApp** and grant admin consent. (If you
+   instead scope the app with RBAC for Applications, Microsoft's SMTP onboarding page says to add
+   **no** `SMTP.SendAsApp` permission in Entra and to assign the Exchange role
+   `Application SMTP.SendAsApp` to the mailbox scope; do not mix the two recipes.)
 2. Exchange Online PowerShell:
    `New-ServicePrincipal -AppId <client id> -ObjectId <enterprise app object id>` then
    `Add-MailboxPermission -Identity whatsapp@vship2000.com -User <service principal id> -AccessRights FullAccess`.
@@ -234,7 +237,8 @@ If the domain shows no DNS editor, its nameservers are hosted elsewhere: check w
 ### 3b. A record for the webhook host (required for Caddy)
 
 Type **A**, Refers to **Other Host**, Host Name `whatsapphook`, Points to the static IP printed by
-`provision.sh`, TTL 3600. Create this **before** running the deploy script; Caddy only requests a
+`provision.sh`, TTL 3600. The domain publishes no CAA records (checked 9 Nov 2026), so Let's Encrypt
+and ZeroSSL may issue certificates for the subdomain without any further DNS change. Create this **before** running the deploy script; Caddy only requests a
 certificate once the name resolves to the VM, and repeated failed attempts count against Let's
 Encrypt rate limits. Check with `dig +short whatsapphook.vship2000.com` (or `nslookup`).
 
@@ -310,6 +314,9 @@ dig CNAME selector2._domainkey.vship2000.com +short
 dig A whatsapphook.vship2000.com +short                    # the VM's static IP
 dig @8.8.8.8 TXT vship2000.com +short                 # bypass local caches
 ```
+
+To read the headers of a received test message: new Outlook and Outlook on the web use **More
+actions > View > View message details**; classic Outlook uses **File > Properties > Internet headers**.
 
 Microsoft side: the Defender DKIM tab shows **Enabled / Valid**; https://testconnectivity.microsoft.com
 checks SPF, DKIM and DMARC. To see DKIM in action send a test from the relay mailbox to an external

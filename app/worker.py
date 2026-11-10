@@ -274,6 +274,7 @@ class Worker:
                     api_version=self.settings.wa_graph_api_version,
                     dest_dir=spool / _safe_dir(msg.wamid),
                     request_timeout=self.settings.wa_media_timeout_seconds,
+                    app_secret=self.settings.wa_app_secret,
                 )
             # Parts are built one at a time (base64 encoding is CPU and memory heavy) in a thread so
             # the webhook endpoint stays responsive; parts already delivered by an earlier attempt

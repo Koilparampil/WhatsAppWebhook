@@ -106,6 +106,19 @@ tools > Phone numbers and in `whatsapp-webhook meta-check` (status `CONNECTED`).
 image and a PDF from a personal phone to the business number and confirm one email per message
 arrives (the PDF path exercises the media download and, for large files, the splitting logic).
 
+### Limits and optional hardening
+
+- At Standard access an app can have **one Employee and one Admin system user**. If the portfolio's
+  Employee system user is already used by another integration, reuse it (generate a second token for
+  it) rather than expecting to create another.
+- **Require App Secret** (App Dashboard > App settings > Advanced > Security) can be switched on:
+  the service sends `appsecret_proof` with every Graph API call it makes. Do this only after the
+  service is deployed with the correct `WA_APP_SECRET`, otherwise media downloads fail.
+- Meta has announced the next phases of the account model: a new Graph API version with separate
+  WhatsApp-account and Messaging-account permissions in the first half of 2027, and WhatsApp-account
+  ids replacing phone number ids in API paths in the first half of 2028. Put a review of
+  `WA_GRAPH_API_VERSION` and the token permissions in the calendar before each.
+
 ## 6. Token hygiene
 
 - Inbound media ids expire 7 days after the webhook and download URLs 5 minutes after they are

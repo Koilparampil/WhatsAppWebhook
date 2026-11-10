@@ -71,6 +71,11 @@ PROJECT_ID=<project> DOMAIN=<host> ACME_EMAIL=<email> bash deploy/gcp/deploy.sh
 `install.sh` is idempotent: it refreshes the code and the virtualenv, keeps the env file and the
 database, reloads Caddy and restarts the service.
 
+The VM is created with deletion protection. To delete or rebuild it, first run
+`gcloud compute instances update whatsapp-webhook --zone us-east1-b --no-deletion-protection`.
+Keep the reserved static IP; a new VM can be created with the same address so DNS and the Meta
+webhook URL stay valid.
+
 ## Logs and privacy
 
 Application logs go to journald (`journalctl -u whatsapp-webhook`). Phone numbers are masked

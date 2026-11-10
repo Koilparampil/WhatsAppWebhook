@@ -34,7 +34,7 @@ if [[ -z "$DOMAIN" ]]; then
   exit 1
 fi
 if [[ -z "$ACME_EMAIL" ]]; then
-  # a real mailbox: certificate-expiry warnings go there and it enables Caddy's ZeroSSL fallback CA
+  # a real mailbox: it registers the ACME account and enables Caddy's ZeroSSL fallback CA
   echo "ACME_EMAIL is required, e.g. ACME_EMAIL=admin@vship2000.com" >&2
   exit 1
 fi
@@ -167,6 +167,13 @@ systemctl restart systemd-journald
 cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
+EOF
+# Debian's default origin patterns only cover Debian's own archives; include Caddy's repository so
+# Caddy receives updates too (the package restarts the service on upgrade).
+cat > /etc/apt/apt.conf.d/51unattended-upgrades-caddy <<'EOF'
+Unattended-Upgrade::Origins-Pattern {
+    "origin=cloudsmith/caddy/stable,codename=any-version";
+};
 EOF
 
 log "Checking configuration"

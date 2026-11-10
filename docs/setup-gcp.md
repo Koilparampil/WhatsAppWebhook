@@ -114,7 +114,8 @@ no SSH port is open to the internet; `gcloud` defaults to `debian-12`, so the sc
 | Egress from North America | 1 GB/month (Premium tier) | 0 at this traffic level |
 | External IPv4 in use | 1 hour/month only | about USD 3.65/month |
 
-Check **Billing > Reports** after a few days. If the VM is ever deleted, also release the address
+Check **Billing > Reports** after a few days; the only non-zero line should be the SKU
+"External IP Charge on a Standard VM". If the VM is ever deleted, also release the address
 (`gcloud compute addresses delete whatsapp-webhook-ip --region us-east1`); an unattached
 reserved address costs more than an attached one.
 

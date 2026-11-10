@@ -55,3 +55,25 @@ async def test_graph_admin_error_is_descriptive():
         with pytest.raises(admin.GraphAdminError) as exc:
             await admin.phone_numbers(http, waba_id="WABA1", **COMMON)
     assert "Unsupported get request" in str(exc.value) and "code 100" in str(exc.value)
+
+
+@respx.mock
+async def test_appsecret_proof_is_sent_when_configured():
+    import hashlib
+    import hmac
+
+    route = respx.get(f"{GRAPH}/v27.0/WABA1/phone_numbers").mock(
+        return_value=httpx.Response(200, json={"data": []})
+    )
+    details = respx.get(f"{GRAPH}/v27.0/PN1").mock(
+        return_value=httpx.Response(200, json={"status": "CONNECTED"})
+    )
+    async with httpx.AsyncClient() as http:
+        await admin.phone_numbers(http, waba_id="WABA1", app_secret="s3cret", **COMMON)
+        info = await admin.phone_number_details(http, phone_number_id="PN1", app_secret="s3cret", **COMMON)
+    expected = hmac.new(b"s3cret", b"tok", hashlib.sha256).hexdigest()
+    assert route.calls[0].request.url.params["appsecret_proof"] == expected
+    assert details.calls[0].request.url.params["appsecret_proof"] == expected
+    assert "status" in details.calls[0].request.url.params["fields"]
+    assert info["status"] == "CONNECTED"
+    assert admin.graph_params("tok", "") == {}

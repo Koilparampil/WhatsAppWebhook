@@ -21,6 +21,7 @@ from urllib.parse import quote
 
 import httpx
 
+from app.whatsapp.admin import graph_params
 from app.whatsapp.parser import MediaRef
 
 log = logging.getLogger(__name__)
@@ -150,6 +151,7 @@ async def download_media(
     api_version: str,
     dest_dir: Path,
     request_timeout: float = 120.0,
+    app_secret: str = "",
 ) -> DownloadedMedia:
     """Fetch ``media`` to ``dest_dir`` and return its metadata. Raises :class:`MediaDownloadError`."""
     if not access_token:
@@ -163,7 +165,9 @@ async def download_media(
     info_url = f"{graph_base_url.rstrip('/')}/{api_version}/{quote(media.id, safe='')}"
 
     try:
-        info_resp = await client.get(info_url, headers=headers, timeout=timeout)
+        info_resp = await client.get(
+            info_url, params=graph_params(access_token, app_secret), headers=headers, timeout=timeout
+        )
     except httpx.HTTPError as exc:
         raise MediaDownloadError(f"media info request failed: {exc!r}") from exc
     if info_resp.status_code != 200:

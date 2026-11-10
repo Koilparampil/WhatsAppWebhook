@@ -53,6 +53,7 @@ async def test_download_verifies_digest_and_size(tmp_path):
             dest_dir=tmp_path / "spool",
         )
     assert info.calls[0].request.headers["Authorization"] == "Bearer tok"
+    assert "appsecret_proof" not in info.calls[0].request.url.params  # no app secret given
     assert blob.calls[0].request.headers["Authorization"] == "Bearer tok"
     assert media.size == len(data)
     assert media.integrity_verified is True

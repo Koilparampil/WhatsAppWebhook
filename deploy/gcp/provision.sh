@@ -32,6 +32,17 @@ gcloud config set project "$PROJECT_ID" >/dev/null
 log "Enabling the Compute Engine API (no-op if already enabled)"
 gcloud services enable compute.googleapis.com
 
+log "Checking the default Compute Engine service account for an automatic Editor grant"
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
+DEFAULT_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+if gcloud projects get-iam-policy "$PROJECT_ID" --flatten='bindings[].members' \
+     --filter="bindings.role=roles/editor AND bindings.members=serviceAccount:${DEFAULT_SA}" \
+     --format='value(bindings.role)' 2>/dev/null | grep -q editor; then
+  echo "Removing roles/editor from $DEFAULT_SA (the VM runs without a service account anyway)"
+  gcloud projects remove-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:${DEFAULT_SA}" --role=roles/editor --all >/dev/null
+fi
+
 log "Enabling OS Login project-wide (metadata SSH keys are then ignored)"
 gcloud compute project-info add-metadata --metadata=enable-oslogin=TRUE
 
