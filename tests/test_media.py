@@ -120,7 +120,10 @@ async def test_download_graph_error_and_missing_token(tmp_path):
 
 def test_filename_helpers():
     assert safe_filename("../../etc/passwd", "x") == "passwd"
-    assert safe_filename("Résumé (final).pdf", "x") == "R_sum_ _final_.pdf"
+    assert safe_filename("Résumé (final).pdf", "x") == "Résumé (final).pdf"
+    assert safe_filename("报价单A.pdf", "x") == "报价单A.pdf"
+    assert safe_filename("bad\x00name\r\n<>:|.pdf", "x") == "bad_name_.pdf"
+    assert safe_filename("C:\\Users\\me\\quote.xlsx", "x") == "quote.xlsx"
     assert safe_filename("", "fallback.bin") == "fallback.bin"
     assert len(safe_filename("a" * 300 + ".pdf", "x")) <= 150
     assert extension_for("audio/ogg; codecs=opus") == ".ogg"

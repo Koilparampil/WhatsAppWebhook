@@ -25,14 +25,17 @@ log = logging.getLogger(__name__)
 GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 OUTLOOK_SMTP_SCOPE = "https://outlook.office365.com/.default"
 GRAPH_INLINE_ATTACHMENT_LIMIT = 3 * 1024 * 1024  # larger attachments need an upload session
-GRAPH_MIME_SEND_LIMIT = 3 * 1024 * 1024  # keep MIME sendMail well under the 4 MB request cap
+# sendMail takes the MIME message base64-encoded in the request body; Graph rejects bodies around
+# 4 MB with HTTP 413. Compare the ENCODED size and leave headroom.
+GRAPH_MIME_SEND_LIMIT = 3_500_000
 GRAPH_UPLOAD_CHUNK = 10 * 327_680  # 3.125 MiB, a multiple of 320 KiB as the upload session requires
 
 
 class SendError(Exception):
-    def __init__(self, message: str, *, retriable: bool = True):
+    def __init__(self, message: str, *, retriable: bool = True, status_code: int | None = None):
         super().__init__(message)
         self.retriable = retriable
+        self.status_code = status_code
 
 
 class Transport(Protocol):
@@ -181,17 +184,23 @@ class GraphTransport:
         return f"{self._s.graph_base_url.rstrip('/')}/users/{self._s.graph_sender}{path}"
 
     async def send(self, message: EmailMessage) -> str:
-        raw = message.as_bytes()
-        if len(raw) <= GRAPH_MIME_SEND_LIMIT:
-            return await self._send_mime(raw, message)
+        raw = await asyncio.to_thread(message.as_bytes)
+        encoded_size = 4 * ((len(raw) + 2) // 3)
+        if encoded_size <= GRAPH_MIME_SEND_LIMIT:
+            try:
+                return await self._send_mime(raw, message)
+            except SendError as exc:
+                if exc.status_code != 413:
+                    raise
+                log.warning("Graph rejected the MIME message as too large; falling back to a draft")
+        del raw
         return await self._send_as_draft(message)
 
     async def _send_mime(self, raw: bytes, message: EmailMessage) -> str:
         headers = await self._headers()
         headers["Content-Type"] = "text/plain"
-        resp = await self._request(
-            "POST", self._url("/sendMail"), headers=headers, content=base64.b64encode(raw)
-        )
+        body = await asyncio.to_thread(base64.b64encode, raw)
+        resp = await self._request("POST", self._url("/sendMail"), headers=headers, content=body)
         if resp.status_code not in (202, 200):
             self._raise_for(resp, "sendMail")
         return message["Message-ID"] or ""
@@ -232,7 +241,7 @@ class GraphTransport:
             raise SendError("Graph draft creation returned no id", retriable=False)
 
         for part in message.iter_attachments():
-            data = part.get_payload(decode=True) or b""
+            data = await asyncio.to_thread(part.get_payload, decode=True) or b""
             name = part.get_filename() or "attachment.bin"
             ctype = part.get_content_type()
             if len(data) <= GRAPH_INLINE_ATTACHMENT_LIMIT:
@@ -296,9 +305,12 @@ class GraphTransport:
 
     @staticmethod
     def _raise_for(resp: httpx.Response, step: str) -> None:
-        retriable = resp.status_code >= 500 or resp.status_code in (401, 403, 408, 429)
+        # 404 is included: a draft created a moment ago can briefly be missing on another replica
+        retriable = resp.status_code >= 500 or resp.status_code in (401, 403, 404, 408, 429)
         raise SendError(
-            f"Graph {step} returned HTTP {resp.status_code}: {resp.text[:300]}", retriable=retriable
+            f"Graph {step} returned HTTP {resp.status_code}: {resp.text[:300]}",
+            retriable=retriable,
+            status_code=resp.status_code,
         )
 
 

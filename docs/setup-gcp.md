@@ -50,11 +50,11 @@ hyphens, starting with a letter, not ending with a hyphen, never reused.
 gcloud projects create <project-id> --name="WhatsApp Webhook" --set-as-default
 gcloud billing accounts list
 gcloud billing projects link <project-id> --billing-account=0X0X0X-0X0X0X-0X0X0X
-gcloud config set compute/region us-central1
-gcloud config set compute/zone us-central1-a
+gcloud config set compute/region us-east1
+gcloud config set compute/zone us-east1-b
 ```
 
-Any of `us-west1`, `us-central1`, `us-east1` is Free Tier eligible. Pick one and keep it.
+Any of `us-west1`, `us-east1`, `us-east1` is Free Tier eligible. Pick one and keep it.
 
 ## 4. Provision the VM
 
@@ -95,7 +95,7 @@ no SSH port is open to the internet; `gcloud` defaults to `debian-12`, so the sc
 3. Fill in the secrets and start:
 
    ```bash
-   gcloud compute ssh whatsapp-webhook --zone us-central1-a --tunnel-through-iap
+   gcloud compute ssh whatsapp-webhook --zone us-east1-b --tunnel-through-iap
    sudo nano /etc/whatsapp-webhook/env        # replace every CHANGE_ME
    sudo systemctl restart whatsapp-webhook && journalctl -u whatsapp-webhook -f
    ```
@@ -108,13 +108,13 @@ no SSH port is open to the internet; `gcloud` defaults to `debian-12`, so the sc
 
 | Item | Free Tier | Expected charge |
 |---|---|---|
-| e2-micro, 24x7 | 1 instance-month in us-west1/us-central1/us-east1 | 0 |
+| e2-micro, 24x7 | 1 instance-month in us-west1/us-east1/us-east1 | 0 |
 | 30 GB standard persistent disk | 30 GB-months | 0 |
 | Egress from North America | 1 GB/month (Premium tier) | 0 at this traffic level |
 | External IPv4 in use | 1 hour/month only | about USD 3.65/month |
 
 Check **Billing > Reports** after a few days. If the VM is ever deleted, also release the address
-(`gcloud compute addresses delete whatsapp-webhook-ip --region us-central1`); an unattached
+(`gcloud compute addresses delete whatsapp-webhook-ip --region us-east1`); an unattached
 reserved address costs more than an attached one.
 
 ## 7. Sources

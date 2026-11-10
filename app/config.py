@@ -109,8 +109,12 @@ class Settings(BaseSettings):
     store_retention_days: int = 30
     worker_enabled: bool = True
     worker_retry_window_seconds: int = 600
+    worker_max_crash_attempts: int = Field(
+        default=3,
+        description="Items found mid-processing after this many restarts are dead-lettered.",
+    )
     alert_retry_window_seconds: int = Field(
-        default=86400,
+        default=43200,
         description="Alert emails keep retrying this long so a mail outage is still reported afterwards.",
     )
     worker_base_delay_seconds: float = 15.0
@@ -147,6 +151,26 @@ class Settings(BaseSettings):
         value = value.strip()
         if not value.startswith("v"):
             value = "v" + value
+        return value
+
+    @field_validator(
+        "wa_verify_token",
+        "wa_app_secret",
+        "wa_access_token",
+        "crm_password",
+        "smtp_password",
+        "oauth_client_secret",
+    )
+    @classmethod
+    def _no_placeholder_secrets(cls, value: str, info) -> str:
+        value = (value or "").strip()
+        lowered = value.lower()
+        if lowered in {"change_me", "changeme", "todo", "xxx"} or (
+            value.startswith("<") and value.endswith(">")
+        ):
+            raise ValueError(f"{info.field_name.upper()} still holds a placeholder value")
+        if info.field_name in {"wa_verify_token", "wa_app_secret"} and 0 < len(value) < 16:
+            raise ValueError(f"{info.field_name.upper()} must be at least 16 characters")
         return value
 
     @field_validator("mail_timezone")
@@ -190,6 +214,8 @@ class Settings(BaseSettings):
             problems.append("CRM_USERNAME and CRM_PASSWORD are required unless CRM_ENABLED=false")
         if self.mail_max_message_bytes < 1_000_000:
             problems.append("MAIL_MAX_MESSAGE_BYTES must be at least 1,000,000")
+        if self.mail_max_message_bytes > 150_000_000:
+            problems.append("MAIL_MAX_MESSAGE_BYTES cannot exceed 150,000,000 (Exchange Online's ceiling)")
         if problems:
             raise ValueError("; ".join(problems))
         return self

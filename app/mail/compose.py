@@ -67,8 +67,17 @@ def chunk_size_for(limit: int, base_size: int = 0) -> int:
     return max(lines * BASE64_RAW_LINE, MIN_CHUNK_BYTES)
 
 
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
 def _clean_header_text(value: str | None) -> str:
-    return re.sub(r"[\r\n\t]+", " ", value or "").strip()
+    """Make sender-controlled text safe for a header: one line, no control characters.
+
+    ``str.split()`` also folds Unicode line/paragraph separators (U+2028, U+2029, U+0085, VT, FF…)
+    which the email package would otherwise reject as multi-line header values.
+    """
+    collapsed = " ".join((value or "").split())
+    return _CONTROL_CHARS.sub("", collapsed).strip()
 
 
 def _message_id(wamid: str, domain: str, part: int | None = None) -> str:
@@ -325,13 +334,26 @@ def _render_html(sections: list[tuple[str, list[str]]], header: list[tuple[str, 
 
 
 # ----------------------------------------------------------------------------- public API
-def build_emails(
+@dataclass(slots=True)
+class EmailPlan:
+    """Everything needed to build any single part of a message's email(s) on demand."""
+
+    msg: InboundMessage
+    lookup: LookupResult
+    media: DownloadedMedia | None
+    settings: Settings
+    part_count: int
+    chunk_size: int
+    chunk_names: list[str]
+
+
+def plan_emails(
     msg: InboundMessage,
     lookup: LookupResult,
     media: DownloadedMedia | None,
     settings: Settings,
-) -> list[OutgoingEmail]:
-    """Return the email(s) to send for ``msg``; more than one only when media must be split."""
+) -> EmailPlan:
+    """Decide how many emails ``msg`` needs (more than one only when media must be split)."""
     chunk_names: list[str] = []
     part_count = 1
     chunk_size = 0
@@ -349,13 +371,21 @@ def build_emails(
             chunk_size = chunk_size_for(settings.mail_max_message_bytes, base_size)
             part_count = max(1, math.ceil(media.size / chunk_size))
             chunk_names = [f"{media.filename}.{i:03d}" for i in range(1, part_count + 1)]
+    return EmailPlan(msg, lookup, media, settings, part_count, chunk_size, chunk_names)
 
-    emails: list[OutgoingEmail] = []
-    for index in range(1, part_count + 1):
-        message = _assemble(msg, lookup, media, settings, index, part_count, chunk_names)
+
+def build_part(plan: EmailPlan, index: int) -> OutgoingEmail:
+    """Build email ``index`` (1-based) of the plan. Only this part's bytes are held in memory."""
+    if not 1 <= index <= plan.part_count:
+        raise ComposeError(f"part {index} out of range 1..{plan.part_count}")
+    media = plan.media
+    try:
+        message = _assemble(
+            plan.msg, plan.lookup, media, plan.settings, index, plan.part_count, plan.chunk_names
+        )
         attachment_name: str | None = None
         if media is not None:
-            if part_count == 1:
+            if plan.part_count == 1:
                 data = Path(media.path).read_bytes()
                 attachment_name = media.filename
                 mime = (media.mime_type or "application/octet-stream").split(";")[0].strip().lower()
@@ -364,19 +394,30 @@ def build_emails(
                     maintype, subtype = "application", "octet-stream"
                 message.add_attachment(data, maintype=maintype, subtype=subtype, filename=attachment_name)
             else:
-                attachment_name = chunk_names[index - 1]
+                attachment_name = plan.chunk_names[index - 1]
                 with Path(media.path).open("rb") as fh:
-                    fh.seek((index - 1) * chunk_size)
-                    data = fh.read(chunk_size)
+                    fh.seek((index - 1) * plan.chunk_size)
+                    data = fh.read(plan.chunk_size)
                 message.add_attachment(
                     data, maintype="application", subtype="octet-stream", filename=attachment_name
                 )
-        emails.append(
-            OutgoingEmail(
-                message=message, part_index=index, part_count=part_count, attachment_name=attachment_name
-            )
-        )
-    return emails
+            del data
+    except ValueError as exc:  # the email package refuses a header or body it cannot represent
+        raise ComposeError(f"could not assemble email: {exc}") from exc
+    return OutgoingEmail(
+        message=message, part_index=index, part_count=plan.part_count, attachment_name=attachment_name
+    )
+
+
+def build_emails(
+    msg: InboundMessage,
+    lookup: LookupResult,
+    media: DownloadedMedia | None,
+    settings: Settings,
+) -> list[OutgoingEmail]:
+    """Convenience wrapper that builds every part at once (tests and small messages)."""
+    plan = plan_emails(msg, lookup, media, settings)
+    return [build_part(plan, index) for index in range(1, plan.part_count + 1)]
 
 
 def _assemble(

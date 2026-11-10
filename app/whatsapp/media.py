@@ -14,8 +14,10 @@ import hashlib
 import logging
 import mimetypes
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 
@@ -64,13 +66,18 @@ class DownloadedMedia:
             log.warning("could not delete spooled media %s", self.path)
 
 
-_SAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]+")
+_UNSAFE_NAME_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f/\\:*?\"<>|]+")
+_MEDIA_ID = re.compile(r"[0-9]{1,40}")
 
 
 def safe_filename(name: str | None, fallback: str) -> str:
-    """Return a filesystem- and header-safe filename (basename only, printable, bounded length)."""
-    candidate = (name or "").replace("\\", "/").rsplit("/", 1)[-1]
-    candidate = _SAFE_NAME.sub("_", candidate).strip(" .")
+    """Return a header- and filesystem-safe filename: basename only, no control characters, bounded.
+
+    Letters from any script are kept (the email package encodes them per RFC 2231); only path
+    separators, control characters and characters Windows refuses in file names are replaced.
+    """
+    candidate = unicodedata.normalize("NFC", name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    candidate = " ".join(_UNSAFE_NAME_CHARS.sub("_", candidate).split()).strip(" .")
     if not candidate:
         candidate = fallback
     if len(candidate) > 150:
@@ -117,6 +124,11 @@ def _digest_matches(expected: str | None, sha256_hex: str) -> bool | None:
     return decoded.hex() == sha256_hex
 
 
+def _write_and_hash(fh, hasher, chunk: bytes) -> None:
+    fh.write(chunk)
+    hasher.update(chunk)
+
+
 def _graph_error_text(response: httpx.Response) -> str:
     try:
         err = response.json().get("error", {})
@@ -142,10 +154,13 @@ async def download_media(
     """Fetch ``media`` to ``dest_dir`` and return its metadata. Raises :class:`MediaDownloadError`."""
     if not access_token:
         raise MediaDownloadError("WA_ACCESS_TOKEN is not configured; cannot download media", retriable=True)
+    if not _MEDIA_ID.fullmatch(media.id):
+        # Meta media ids are numeric; anything else would be interpolated into an authenticated URL
+        raise MediaDownloadError(f"refusing malformed media id {media.id[:40]!r}", retriable=False)
     await asyncio.to_thread(dest_dir.mkdir, parents=True, exist_ok=True)
     timeout = request_timeout
     headers = {"Authorization": f"Bearer {access_token}"}
-    info_url = f"{graph_base_url.rstrip('/')}/{api_version}/{media.id}"
+    info_url = f"{graph_base_url.rstrip('/')}/{api_version}/{quote(media.id, safe='')}"
 
     try:
         info_resp = await client.get(info_url, headers=headers, timeout=timeout)
@@ -183,9 +198,9 @@ async def download_media(
                     status_code=resp.status_code,
                 )
             with target.open("wb") as fh:
-                async for chunk in resp.aiter_bytes(1024 * 256):
-                    fh.write(chunk)
-                    hasher.update(chunk)
+                async for chunk in resp.aiter_bytes(1024 * 1024):
+                    # disk writes and hashing of a 100 MB file must not stall the event loop
+                    await asyncio.to_thread(_write_and_hash, fh, hasher, chunk)
                     size += len(chunk)
     except httpx.HTTPError as exc:
         target.unlink(missing_ok=True)
@@ -206,7 +221,8 @@ async def download_media(
         log.warning("sha256 mismatch for media %s (wamid %s); attaching anyway", media.id, wamid)
 
     filename = default_filename(media, wamid, mime_type)
-    final = dest_dir / f"{safe_id}-{filename}"
+    # the spool path never uses the sender's file name; the name only travels in the email headers
+    final = dest_dir / f"{safe_id}{extension_for(mime_type)}"
     target.replace(final)
     return DownloadedMedia(
         path=final,

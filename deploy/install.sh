@@ -30,7 +30,12 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 if [[ -z "$DOMAIN" ]]; then
-  echo "DOMAIN is required, e.g. DOMAIN=wa.example.com" >&2
+  echo "DOMAIN is required, e.g. DOMAIN=whatsapphook.vship2000.com" >&2
+  exit 1
+fi
+if [[ -z "$ACME_EMAIL" ]]; then
+  # a real mailbox: certificate-expiry warnings go there and it enables Caddy's ZeroSSL fallback CA
+  echo "ACME_EMAIL is required, e.g. ACME_EMAIL=admin@vship2000.com" >&2
   exit 1
 fi
 if [[ ! -f "$SRC/requirements.txt" || ! -d "$SRC/app" ]]; then
@@ -53,9 +58,16 @@ fi
 if [[ ! -f /etc/apt/sources.list.d/caddy-stable.list ]]; then
   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
     > /etc/apt/sources.list.d/caddy-stable.list
+  chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg /etc/apt/sources.list.d/caddy-stable.list
   apt-get update -qq
 fi
 apt-get install -y -qq caddy
+# Debian's own archive ships a years-old Caddy; make sure the package came from the Caddy repository.
+if ! apt-cache policy caddy | grep -q 'dl.cloudsmith.io'; then
+  echo "caddy was not installed from dl.cloudsmith.io; check /etc/apt/sources.list.d/caddy-stable.list" >&2
+  exit 1
+fi
+echo "caddy $(caddy version)"
 
 log "Creating service user and directories"
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
@@ -114,7 +126,7 @@ systemctl daemon-reload
 systemctl enable whatsapp-webhook >/dev/null
 
 log "Installing Caddyfile for $DOMAIN"
-sed -e "s/__DOMAIN__/$DOMAIN/g" -e "s/__ACME_EMAIL__/${ACME_EMAIL:-admin@$DOMAIN}/g" \
+sed -e "s/__DOMAIN__/$DOMAIN/g" -e "s/__ACME_EMAIL__/$ACME_EMAIL/g" \
   "$APP_DIR/deploy/Caddyfile" > /etc/caddy/Caddyfile
 caddy validate --config /etc/caddy/Caddyfile >/dev/null
 systemctl enable caddy >/dev/null

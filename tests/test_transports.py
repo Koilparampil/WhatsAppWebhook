@@ -166,7 +166,7 @@ async def test_graph_errors_map_to_retriable_flags(tmp_path):
         return_value=httpx.Response(200, json={"access_token": "T", "expires_in": 3600})
     )
     respx.post(f"{GRAPH}/sendMail").mock(
-        return_value=httpx.Response(413, json={"error": {"message": "too big"}})
+        return_value=httpx.Response(400, json={"error": {"message": "invalid MIME content"}})
     )
     async with httpx.AsyncClient() as http:
         transport = build_transport(settings, http)

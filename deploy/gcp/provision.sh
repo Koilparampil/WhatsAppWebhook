@@ -13,8 +13,8 @@
 set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:?set PROJECT_ID to your Google Cloud project id}"
-REGION="${REGION:-us-central1}"            # Free Tier e2-micro: us-west1, us-central1 or us-east1
-ZONE="${ZONE:-${REGION}-a}"
+REGION="${REGION:-us-east1}"            # Free Tier e2-micro: us-west1, us-central1 or us-east1
+ZONE="${ZONE:-${REGION}-b}"
 VM_NAME="${VM_NAME:-whatsapp-webhook}"
 MACHINE_TYPE="${MACHINE_TYPE:-e2-micro}"
 IMAGE_FAMILY="${IMAGE_FAMILY:-debian-13}"  # gcloud defaults to debian-12, so always pass this explicitly

@@ -80,5 +80,5 @@ are stored in the queue database until the row is purged (`STORE_RETENTION_DAYS`
 ## Resource footprint
 
 Expected steady state on the e2-micro: Caddy 30 to 40 MB, the Python service 70 to 100 MB, CPU near
-zero. `MemoryMax=400M` in the unit file stops a runaway process from taking the VM down; a 1 GB swap
+zero. `MemoryMax=600M` in the unit file stops a runaway process from taking the VM down; a 1 GB swap
 file is created by `install.sh` as a safety net.

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Copy this repository to the VM and run deploy/install.sh there. Re-run to upgrade.
 #
-#   PROJECT_ID=my-project DOMAIN=wa.example.com ACME_EMAIL=admin@example.com bash deploy/gcp/deploy.sh
+#   PROJECT_ID=my-project DOMAIN=whatsapphook.vship2000.com ACME_EMAIL=admin@vship2000.com bash deploy/gcp/deploy.sh
 #
-# Optional: ZONE (default us-central1-a), VM_NAME (default whatsapp-webhook)
+# Optional: ZONE (default us-east1-b), VM_NAME (default whatsapp-webhook)
 set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:?set PROJECT_ID}"
-DOMAIN="${DOMAIN:?set DOMAIN to the webhook hostname, e.g. wa.example.com}"
-ACME_EMAIL="${ACME_EMAIL:-}"
-ZONE="${ZONE:-us-central1-a}"
+DOMAIN="${DOMAIN:?set DOMAIN to the webhook hostname, e.g. whatsapphook.vship2000.com}"
+ACME_EMAIL="${ACME_EMAIL:?set ACME_EMAIL to a real mailbox for certificate notices, e.g. admin@vship2000.com}"
+ZONE="${ZONE:-us-east1-b}"
 VM_NAME="${VM_NAME:-whatsapp-webhook}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

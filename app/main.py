@@ -26,10 +26,13 @@ log = logging.getLogger("app")
 
 
 def configure_logging(level: str) -> None:
+    numeric = getattr(logging, level.upper(), logging.INFO)
     logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
+        level=numeric,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,  # the CLI configures logging first; the service's LOG_LEVEL must win
     )
+    logging.getLogger().setLevel(numeric)
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
@@ -72,8 +75,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.directory = directory
         app.state.worker = worker
         app.state.started_at = time.time()
+        app.state.worker_task = None
+        if settings.wa_allow_unsigned:
+            log.error(
+                "WA_ALLOW_UNSIGNED=true: webhook signature checks are OFF. Never run production like this."
+            )
         if settings.worker_enabled:
-            tasks.append(asyncio.create_task(worker.run(stop), name="worker"))
+            app.state.worker_task = asyncio.create_task(worker.run(stop), name="worker")
+            tasks.append(app.state.worker_task)
             tasks.append(asyncio.create_task(_maintenance_loop(worker, stop), name="maintenance"))
         if directory.enabled:
             tasks.append(asyncio.create_task(_warm_directory(directory), name="crm-warmup"))
@@ -164,15 +173,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         worker: Worker = request.app.state.worker
         directory: Directory = request.app.state.directory
         stats = store.stats()
-        return JSONResponse(
-            {
-                "ok": True,
-                "uptime_seconds": round(time.time() - request.app.state.started_at, 1),
-                "queue": stats,
-                "worker": worker.status(),
-                "crm": directory.status(),
-            }
-        )
+        task: asyncio.Task[Any] | None = request.app.state.worker_task
+        worker_alive = (not settings.worker_enabled) or (task is not None and not task.done())
+        body = {
+            "ok": worker_alive,
+            "uptime_seconds": round(time.time() - request.app.state.started_at, 1),
+            "queue": stats,
+            "worker": {**worker.status(), "alive": worker_alive},
+            "crm": directory.status(),
+        }
+        return JSONResponse(body, status_code=200 if worker_alive else 503)
 
     return app
 
@@ -180,6 +190,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 def _envelope_for(payload: dict[str, Any], wamid: str) -> dict[str, Any]:
     """Keep only the change that carries ``wamid`` so each queue row is self-contained and small."""
     for entry in payload.get("entry") or []:
+        if not isinstance(entry, dict):
+            continue
         for change in entry.get("changes") or []:
             value = change.get("value") if isinstance(change, dict) else None
             if not isinstance(value, dict):

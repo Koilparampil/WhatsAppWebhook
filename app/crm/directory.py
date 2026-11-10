@@ -109,7 +109,11 @@ class Directory:
         if not self.enabled:
             return {}
         assert self._client is not None
+        before = self.last_refresh_at
         async with self._lock:
+            if self.last_refresh_at != before:
+                # another caller refreshed while we waited for the lock; the index is already fresh
+                return {e: len(ix.records) for e, ix in self._by_entity.items()}
             self.last_attempt_at = self._clock()
             counts: dict[str, int] = {}
             errors: list[str] = []

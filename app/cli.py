@@ -217,6 +217,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         host=settings.app_bind_host,
         port=settings.app_bind_port,
         log_level=settings.log_level.lower(),
+        access_log=False,  # the app logs each request itself; uvicorn's line would include hub.verify_token
     )
     return 0
 

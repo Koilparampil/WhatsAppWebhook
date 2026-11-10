@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import phonenumbers
@@ -134,13 +134,19 @@ class CrmRecord:
 
 
 def _parse_datetime(value: Any) -> datetime | None:
+    """Parse an API timestamp; unset .NET dates (year 1) and other junk become None."""
     if not value or not isinstance(value, str):
         return None
     text = value.strip().replace("Z", "+00:00")
     try:
-        return datetime.fromisoformat(text)
+        parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
+    if parsed.year < 1970:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 def record_from_api(entity: str, obj: dict[str, Any], default_region: str | None) -> CrmRecord | None:
@@ -204,7 +210,10 @@ def rank_candidates(candidates: list[MatchCandidate], entity_order: list[str]) -
             return len(entity_order)
 
     def sort_key(c: MatchCandidate) -> tuple[int, int, int, int, float, str]:
-        updated = c.record.updated_at.timestamp() if c.record.updated_at else 0.0
+        try:
+            updated = c.record.updated_at.timestamp() if c.record.updated_at else 0.0
+        except (ValueError, OverflowError, OSError):
+            updated = 0.0
         return (
             0 if c.exact else 1,
             entity_rank(c.record.entity),

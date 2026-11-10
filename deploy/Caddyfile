@@ -16,7 +16,13 @@ __DOMAIN__ {
 
 	log {
 		output stderr
-		format json
+		# JSON access log in journald, with Meta's verify token stripped from the query string
+		format filter {
+			wrap json
+			request>uri query {
+				delete hub.verify_token
+			}
+		}
 	}
 
 	# Only the webhook path reaches the application.

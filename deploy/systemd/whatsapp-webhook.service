@@ -18,8 +18,8 @@ TimeoutStopSec=40
 KillSignal=SIGTERM
 
 # Resource ceiling: well above the ~90 MB the service normally uses, well below the VM's 1 GB.
-# Peak use is about 3.5x the largest email part while it is encoded and sent; 600M covers the
-# default MAIL_MAX_MESSAGE_BYTES (32 MB). Raise it if you raise that limit.
+# Peak use is roughly 6x the largest email part while it is encoded and sent (about 140 MB with the
+# default 32 MB MAIL_MAX_MESSAGE_BYTES). 600M covers parts up to about 90 MB; raise it with the limit.
 MemoryMax=600M
 TasksMax=128
 
@@ -27,6 +27,12 @@ TasksMax=128
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
+ProtectProc=invisible
+ProcSubset=pid
+RemoveIPC=true
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @debug @raw-io @reboot @swap @module @obsolete
+SystemCallErrorNumber=EPERM
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/whatsapp-webhook

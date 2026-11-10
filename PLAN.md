@@ -17,6 +17,14 @@ Date: 2026-11-09
 | Retries | failed sends retry for **10 minutes**, then dead-letter and an **alert email** | `WORKER_RETRY_WINDOW_SECONDS=600`, `ALERT_ON_DEAD_LETTER=true` |
 | Graph API version | v27.0 (released 4 Nov 2026) | `WA_GRAPH_API_VERSION=v27.0` |
 | Media download failure | treated as a retriable failure of the whole message (no email without its attachment); dead-letter + alert after the window | protects the "attach all media" requirement; `replay-failed` re-sends |
+| Mail transport (confirmed) | **Microsoft Graph** from an unlicensed **shared mailbox** (proposed `whatsapp@vship2000.com`); Global Admin available to run the Exchange Online steps | `MAIL_TRANSPORT=graph`; docs/setup-microsoft365-email.md section 2 |
+| Message size | keep the 32 MB split threshold; worked example for raising tenant limits documented | `MAIL_MAX_MESSAGE_BYTES=32000000` |
+| Timezone | New York | `MAIL_TIMEZONE=America/New_York` |
+| Hostname / DNS | `whatsapphook.vship2000.com`; nameservers `ns89/ns90.worldnic.com` (Network Solutions); SPF, DKIM CNAMEs and DMARC `p=none` already published, only the A record is missing | docs/setup-microsoft365-email.md section 3 |
+| Google Cloud | owner account `thevshipapp@gmail.com`; the external IP charge is accepted; proposed region `us-east1` (closest Free Tier region to New York) | deploy/gcp/provision.sh defaults |
+| CRM records | inactive customers are not searched | `CRM_INCLUDE_INACTIVE=false` |
+| Alerts | same recipients as the forwarded mail; alerts retry for **12 hours**; no alerts about alerts | `ALERT_RETRY_WINDOW_SECONDS=43200` |
+| Split format (confirmed) | `name.001`, `name.002`, …; every email states its part number and the `copy /b`, `cat` and 7-Zip rebuild commands | app/mail/compose.py |
 
 ---
 

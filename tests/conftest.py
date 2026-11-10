@@ -29,8 +29,8 @@ def clock() -> FakeClock:
 
 def make_settings(tmp_path: Path, **overrides: Any) -> Settings:
     base: dict[str, Any] = {
-        "wa_verify_token": "verify-me",
-        "wa_app_secret": "app-secret",
+        "wa_verify_token": "verify-me-verify-me",
+        "wa_app_secret": "app-secret-app-secret",
         "wa_access_token": "wa-token",
         "crm_enabled": True,
         "crm_username": "svc",

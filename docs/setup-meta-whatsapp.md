@@ -41,6 +41,30 @@ Existing WABA ids are now Messaging account ids; nothing changes in the API call
    service is configured, with `whatsapp-webhook meta-check`. Expect type `SYSTEM_USER`,
    `is_valid: true`, expires `Never`, and both `whatsapp_` scopes.
 
+### Employee or Admin system user
+
+| | Employee system user (recommended) | Admin system user |
+|---|---|---|
+| Access | Only the assets you assign: this app, this WhatsApp account, this Messaging account. | Automatically has full access to every WhatsApp and Messaging account the portfolio owns now or later, and can assign permissions to others. |
+| Blast radius if the token leaks | Limited to the assigned assets. | The whole portfolio: numbers, templates, billing, other apps. Meta's own guidance is to reserve admin system users for administrative actions and to safeguard their tokens carefully. |
+| Maintenance | A new WhatsApp or Messaging account must be assigned explicitly (two tabs since the 2026 account split). Forgetting one shows up as Graph error 200. | Nothing to assign when accounts are added. |
+| Fit for this service | Exactly one app and one number; the token sits on a VM for years. | Convenient, but more privilege than the forwarder needs. |
+
+Use Employee unless you plan to add numbers frequently and accept the broader token.
+
+### How to tell whether the portfolio enforces expiring tokens
+
+1. Open the system user and click **Generate new token**. The dialog has a **token expiration**
+   selector. If it offers **Never** next to **60 days**, permanent tokens are allowed. If only
+   **60 days** is offered, Meta requires expiring tokens for this portfolio; there is no setting to
+   change that, and generating a non-expiring token through the API returns an error.
+2. After generating, paste the token into https://developers.facebook.com/tools/debug/accesstoken/
+   or run `whatsapp-webhook meta-check` on the VM: **Expires: Never** (API `expires_at: 0`) confirms a
+   permanent token; a date about 60 days out means it is an expiring one.
+
+If expiring tokens are enforced, tell us: the service then needs a scheduled refresh job (section 6)
+rather than a one-time token.
+
 ## 3. Values the service needs
 
 | Value | Where | Env var |

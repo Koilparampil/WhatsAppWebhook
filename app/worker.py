@@ -1,14 +1,17 @@
 """Background worker: drains the SQLite queue, builds and sends emails, retries, dead-letters.
 
 Retry policy (configurable): exponential backoff starting at ``WORKER_BASE_DELAY_SECONDS``, capped
-at ``WORKER_MAX_DELAY_SECONDS``, for at most ``WORKER_RETRY_WINDOW_SECONDS`` after the first attempt.
-After that the item is marked ``failed`` (dead letter) and, if enabled, an alert email is queued.
+at ``WORKER_MAX_DELAY_SECONDS``, for at most ``WORKER_RETRY_WINDOW_SECONDS`` after the first attempt
+(``ALERT_RETRY_WINDOW_SECONDS`` for alert emails). After that the item is marked ``failed`` (dead
+letter) and, if enabled, an alert email is queued. The loop itself never dies: an unexpected error in
+the loop body (for example a SQLite I/O error) is logged, counted, and retried after a pause.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import time
 import traceback
 import uuid
@@ -19,9 +22,9 @@ import httpx
 
 from app.config import Settings
 from app.crm.directory import Directory, LookupResult, LookupStatus
-from app.mail.compose import ComposeError, build_alert_email, build_emails
+from app.mail.compose import ComposeError, build_alert_email, build_part, plan_emails
 from app.mail.transports import SendError, Transport
-from app.store import KIND_ALERT, KIND_MESSAGE, QueueItem, Store
+from app.store import KIND_ALERT, KIND_MESSAGE, STATUS_PROCESSING, QueueItem, Store
 from app.whatsapp.media import DownloadedMedia, MediaDownloadError, download_media
 from app.whatsapp.parser import InboundMessage, parse_webhook
 
@@ -65,19 +68,40 @@ class Worker:
         self.wakeup = asyncio.Event()
         self.last_send_ok_at: float | None = None
         self.last_error: str | None = None
+        self.loop_errors = 0
+        self.last_loop_error_at: float | None = None
+        self.error_pause_seconds = 2.0  # doubled per consecutive loop error, capped at 60 s
         self._current: str | None = None
 
     # ------------------------------------------------------------------ loop
     async def run(self, stop: asyncio.Event) -> None:
-        recovered = self.store.recover_processing(self.clock())
-        if recovered:
-            log.info("re-queued %d item(s) left in processing state", recovered)
+        try:
+            self.recover_interrupted()
+            await asyncio.to_thread(self.clean_spool)
+        except Exception:
+            log.exception("startup recovery failed; continuing")
+        consecutive = 0
         while not stop.is_set():
-            item = self.store.claim_next(self.clock())
-            if item is None:
-                await self._sleep_until_due(stop)
-                continue
-            await self.handle(item)
+            try:
+                item = self.store.claim_next(self.clock())
+                if item is None:
+                    await self._sleep_until_due(stop)
+                    continue
+                await self.handle(item)
+                consecutive = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                consecutive += 1
+                self.loop_errors += 1
+                self.last_loop_error_at = self.clock()
+                self.last_error = f"worker loop error: {exc!r}"
+                log.exception("worker loop error (%d in a row); pausing before retrying", consecutive)
+                pause = min(60.0, self.error_pause_seconds * 2 ** min(consecutive - 1, 5))
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=pause)
+                except TimeoutError:
+                    pass
         log.info("worker stopped")
 
     async def _sleep_until_due(self, stop: asyncio.Event) -> None:
@@ -94,6 +118,51 @@ class Worker:
             for task in (stop_task, wake_task):
                 if not task.done():
                     task.cancel()
+
+    # ------------------------------------------------------------------ startup recovery
+    def recover_interrupted(self) -> None:
+        """Items left in ``processing`` by a crash get a backoff; repeat offenders are dead-lettered.
+
+        Without the attempt cap a message that kills the process (for example by exhausting memory)
+        would be claimed again immediately after every restart, forever.
+        """
+        now = self.clock()
+        for item in self.store.list_by_status(STATUS_PROCESSING, limit=10_000):
+            reason = f"process died while processing (attempt {item.attempts})"
+            window = (
+                self.settings.alert_retry_window_seconds
+                if item.kind == KIND_ALERT
+                else self.settings.worker_retry_window_seconds
+            )
+            first = item.first_attempt_at or now
+            if item.attempts >= self.settings.worker_max_crash_attempts or now - first > window:
+                self._dead_letter(item, f"gave up after {item.attempts} interrupted attempt(s): {reason}")
+                continue
+            delay = min(
+                self.settings.worker_base_delay_seconds * (2 ** max(0, item.attempts - 1)),
+                self.settings.worker_max_delay_seconds,
+            )
+            self.store.mark_retry(item.id, now + delay, reason)
+            log.warning("re-queued interrupted item %s in %.0fs (%s)", item.key, delay, reason)
+
+    def clean_spool(self) -> int:
+        """Remove partial downloads left behind by a crash. The spool only holds transient files."""
+        spool = Path(self.settings.spool_dir)
+        if not spool.exists():
+            return 0
+        removed = 0
+        for child in spool.iterdir():
+            try:
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+                removed += 1
+            except OSError as exc:
+                log.warning("could not remove stale spool entry %s: %s", child, exc)
+        if removed:
+            log.info("removed %d stale spool entr%s", removed, "y" if removed == 1 else "ies")
+        return removed
 
     # ------------------------------------------------------------------ one item
     async def handle(self, item: QueueItem) -> None:
@@ -115,6 +184,8 @@ class Worker:
                 self._dead_letter(item, f"not retriable: {exc}")
         except ComposeError as exc:
             self._dead_letter(item, f"compose: {exc}")
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:  # unexpected bug: retry, then dead-letter with the traceback
             log.exception("unexpected error processing %s", item.key)
             self._schedule_retry(item, f"{exc!r}\n{traceback.format_exc()[-1500:]}")
@@ -182,7 +253,7 @@ class Worker:
         if not messages:
             raise PermanentFailure("stored payload no longer contains the message")
         msg: InboundMessage = messages[0]
-        lookup = await self.directory.lookup(msg.from_phone)
+        lookup = await self._safe_lookup(msg)
         log.info(
             "message %s from %s type=%s crm=%s",
             msg.wamid,
@@ -204,22 +275,41 @@ class Worker:
                     dest_dir=spool / _safe_dir(msg.wamid),
                     request_timeout=self.settings.wa_media_timeout_seconds,
                 )
-            emails = build_emails(msg, lookup, media, self.settings)
-            # Parts already delivered by an earlier attempt are not sent again (chunking is deterministic).
-            sent = min(item.emails_sent, len(emails))
+            # Parts are built one at a time (base64 encoding is CPU and memory heavy) in a thread so
+            # the webhook endpoint stays responsive; parts already delivered by an earlier attempt
+            # are skipped because the chunk boundaries are deterministic.
+            plan = await asyncio.to_thread(plan_emails, msg, lookup, media, self.settings)
+            sent = min(item.emails_sent, plan.part_count)
             if sent:
-                log.info("resuming %s at part %d/%d", msg.wamid, sent + 1, len(emails))
-            for outgoing in emails[sent:]:
+                log.info("resuming %s at part %d/%d", msg.wamid, sent + 1, plan.part_count)
+            for index in range(sent + 1, plan.part_count + 1):
+                outgoing = await asyncio.to_thread(build_part, plan, index)
                 await self.transport.send(outgoing.message)
+                del outgoing
                 sent += 1
-                if outgoing.part_count > 1:
+                if plan.part_count > 1:
                     self.store.set_progress(item.id, sent)
-                    log.info("sent part %d/%d for %s", outgoing.part_index, outgoing.part_count, msg.wamid)
+                    log.info("sent part %d/%d for %s", index, plan.part_count, msg.wamid)
             return ProcessOutcome(emails_sent=sent, lookup=lookup)
         finally:
             if media is not None:
                 media.cleanup()
                 _rmdir_quiet(spool / _safe_dir(msg.wamid))
+
+    async def _safe_lookup(self, msg: InboundMessage) -> LookupResult:
+        """A bug in the CRM lookup must never block the email: degrade to a lookup error instead."""
+        try:
+            return await self.directory.lookup(msg.from_phone)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.exception("CRM lookup crashed for %s", msg.wamid)
+            return LookupResult(
+                LookupStatus.ERROR,
+                reason=f"lookup crashed: {exc!r}",
+                entities_searched=list(getattr(self.directory, "entities", [])),
+                index_age_seconds=_index_age(self.directory),
+            )
 
     async def process_alert(self, item: QueueItem) -> ProcessOutcome:
         subject = str(item.payload.get("subject") or "alert")
@@ -237,8 +327,17 @@ class Worker:
             "current": self._current,
             "last_send_ok_at": self.last_send_ok_at,
             "last_error": self.last_error,
-            "lookup_statuses": [s.value for s in LookupStatus],
+            "loop_errors": self.loop_errors,
+            "last_loop_error_at": self.last_loop_error_at,
         }
+
+
+def _index_age(directory: object) -> float | None:
+    getter = getattr(directory, "index_age", None)
+    try:
+        return getter() if callable(getter) else None
+    except Exception:
+        return None
 
 
 def _safe_dir(wamid: str) -> str:

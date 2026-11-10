@@ -32,7 +32,11 @@ def test_verification_handshake(tmp_path):
     with TestClient(create_app(settings)) as client:
         ok = client.get(
             "/webhook",
-            params={"hub.mode": "subscribe", "hub.verify_token": "verify-me", "hub.challenge": "1158201444"},
+            params={
+                "hub.mode": "subscribe",
+                "hub.verify_token": "verify-me-verify-me",
+                "hub.challenge": "1158201444",
+            },
         )
         assert ok.status_code == 200 and ok.text == "1158201444"
         bad = client.get(
