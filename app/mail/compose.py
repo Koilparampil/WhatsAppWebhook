@@ -140,7 +140,8 @@ def _local_time(timestamp: int, tz_name: str) -> str:
 
 # ----------------------------------------------------------------------------- body sections
 def _sender_lines(msg: InboundMessage, settings: Settings) -> list[tuple[str, str]]:
-    lines: list[tuple[str, str]] = [("From", msg.sender_label)]
+    # "Sender", not "From": some mail stores rewrite body lines that start with "From " to ">From "
+    lines: list[tuple[str, str]] = [("Sender", msg.sender_label)]
     phone = format_phone_for_humans(msg.phone_e164)
     lines.append(("Phone", phone or "not shared by WhatsApp (sender uses a username or privacy setting)"))
     if msg.username:

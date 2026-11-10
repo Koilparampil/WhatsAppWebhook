@@ -1,9 +1,7 @@
 # Caddy configuration for the WhatsApp email forwarder.
-# deploy/install.sh replaces __DOMAIN__ and __ACME_EMAIL__ and installs this as /etc/caddy/Caddyfile.
-#
-# Caddy obtains and renews the TLS certificate automatically (Let's Encrypt, with ZeroSSL as fallback)
-# as long as the DNS A record for the domain points at this VM and ports 80/443 are reachable.
-
+# deploy/install.sh fills in the webhook hostname and the ACME e-mail, then installs this file as
+# /etc/caddy/Caddyfile. Caddy obtains and renews the TLS certificate automatically (Let's Encrypt,
+# with ZeroSSL as fallback) once the DNS A record points at this VM and ports 80/443 are reachable.
 {
 	email __ACME_EMAIL__
 }
