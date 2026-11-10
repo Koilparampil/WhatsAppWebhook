@@ -85,5 +85,11 @@ are stored in the queue database until the row is purged (`STORE_RETENTION_DAYS`
 ## Resource footprint
 
 Expected steady state on the e2-micro: Caddy 30 to 40 MB, the Python service 70 to 100 MB, CPU near
-zero. `MemoryMax=600M` in the unit file stops a runaway process from taking the VM down; a 1 GB swap
-file is created by `install.sh` as a safety net.
+zero. While a large file is split and sent through Graph the service peaks around 170 MB at the
+default 32 MB limit (measured with a 100 MB document); the SMTP fallback peaks around 330 MB.
+`MemoryMax=600M` in the unit file stops a runaway process from taking the VM down; a 1 GB swap file
+is created by `install.sh` as a safety net.
+
+Disk: the queue database stays small (raw webhook payloads, purged after `STORE_RETENTION_DAYS`).
+Media is spooled to `/var/lib/whatsapp-webhook/spool` only while a message is being processed, so
+the largest file in flight (WhatsApp allows documents up to 100 MB) is the only disk peak.

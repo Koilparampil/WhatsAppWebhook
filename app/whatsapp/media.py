@@ -67,17 +67,21 @@ class DownloadedMedia:
             log.warning("could not delete spooled media %s", self.path)
 
 
-_UNSAFE_NAME_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f/\\:*?\"<>|]+")
+# control characters, path separators, characters Windows refuses in names, and the shell/cmd
+# metacharacters that would matter inside the rebuild commands quoted in the email
+_UNSAFE_NAME_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f/\\:*?\"<>|'`$%&;!^]+")
 _MEDIA_ID = re.compile(r"[0-9]{1,40}")
 
 
 def safe_filename(name: str | None, fallback: str) -> str:
-    """Return a header- and filesystem-safe filename: basename only, no control characters, bounded.
+    """Return a header-, shell- and filesystem-safe filename: basename only, bounded length.
 
-    Letters from any script are kept (the email package encodes them per RFC 2231); only path
-    separators, control characters and characters Windows refuses in file names are replaced.
+    Letters from any script are kept (the email package encodes them per RFC 2231); path
+    separators, control and Unicode format characters (bidi overrides and the like), characters
+    Windows refuses in file names and shell metacharacters are replaced.
     """
     candidate = unicodedata.normalize("NFC", name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    candidate = "".join(ch for ch in candidate if unicodedata.category(ch) != "Cf")
     candidate = " ".join(_UNSAFE_NAME_CHARS.sub("_", candidate).split()).strip(" .")
     if not candidate:
         candidate = fallback

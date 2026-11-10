@@ -37,7 +37,9 @@ CREATE TABLE IF NOT EXISTS queue (
     next_attempt_at REAL NOT NULL,
     last_error TEXT,
     finished_at REAL,
-    emails_sent INTEGER NOT NULL DEFAULT 0
+    emails_sent INTEGER NOT NULL DEFAULT 0,
+    crashes INTEGER NOT NULL DEFAULT 0,
+    plan_sig TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_queue_status_next ON queue(status, next_attempt_at);
 CREATE TABLE IF NOT EXISTS meta (
@@ -45,6 +47,12 @@ CREATE TABLE IF NOT EXISTS meta (
     v TEXT
 );
 """
+
+# columns added after the first release; created on open when an older database lacks them
+_MIGRATIONS = {
+    "crashes": "ALTER TABLE queue ADD COLUMN crashes INTEGER NOT NULL DEFAULT 0",
+    "plan_sig": "ALTER TABLE queue ADD COLUMN plan_sig TEXT",
+}
 
 
 @dataclass(slots=True)
@@ -61,9 +69,12 @@ class QueueItem:
     last_error: str | None
     finished_at: float | None
     emails_sent: int
+    crashes: int = 0
+    plan_sig: str | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> QueueItem:
+        keys = row.keys()
         return cls(
             id=row["id"],
             kind=row["kind"],
@@ -77,6 +88,8 @@ class QueueItem:
             last_error=row["last_error"],
             finished_at=row["finished_at"],
             emails_sent=row["emails_sent"],
+            crashes=row["crashes"] if "crashes" in keys else 0,
+            plan_sig=row["plan_sig"] if "plan_sig" in keys else None,
         )
 
 
@@ -97,6 +110,10 @@ class Store:
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.executescript(_SCHEMA)
+            existing = {r["name"] for r in self._conn.execute("PRAGMA table_info(queue)")}
+            for column, ddl in _MIGRATIONS.items():
+                if column not in existing:
+                    self._conn.execute(ddl)
 
     def close(self) -> None:
         with self._lock:
@@ -156,10 +173,24 @@ class Store:
                 (STATUS_DONE, now, emails_sent, item_id),
             )
 
-    def set_progress(self, item_id: int, emails_sent: int) -> None:
-        """Record how many emails (parts) of an item have been sent so a retry can resume."""
+    def set_progress(self, item_id: int, emails_sent: int, plan_sig: str | None = None) -> None:
+        """Record how many emails (parts) of an item have been sent, and how the media was cut."""
         with self._lock:
-            self._conn.execute("UPDATE queue SET emails_sent = ? WHERE id = ?", (emails_sent, item_id))
+            self._conn.execute(
+                "UPDATE queue SET emails_sent = ?, plan_sig = ? WHERE id = ?",
+                (emails_sent, plan_sig, item_id),
+            )
+
+    def mark_interrupted(self, item_id: int, next_attempt_at: float, error: str) -> int:
+        """An item found mid-processing after a crash: count the crash and schedule a retry."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE queue SET status = ?, next_attempt_at = ?, last_error = ?, crashes = crashes + 1"
+                " WHERE id = ?",
+                (STATUS_PENDING, next_attempt_at, error[:4000], item_id),
+            )
+            row = self._conn.execute("SELECT crashes FROM queue WHERE id = ?", (item_id,)).fetchone()
+            return int(row["crashes"]) if row else 0
 
     def mark_retry(self, item_id: int, next_attempt_at: float, error: str) -> None:
         with self._lock:
@@ -210,14 +241,15 @@ class Store:
         with self._lock:
             if key is None:
                 cur = self._conn.execute(
-                    "UPDATE queue SET status = ?, next_attempt_at = ?, first_attempt_at = NULL,"
-                    " attempts = 0, emails_sent = 0, finished_at = NULL WHERE status = ?",
+                    "UPDATE queue SET status = ?, next_attempt_at = ?, first_attempt_at = NULL, attempts = 0,"
+                    " emails_sent = 0, crashes = 0, plan_sig = NULL, finished_at = NULL WHERE status = ?",
                     (STATUS_PENDING, now, STATUS_FAILED),
                 )
             else:
                 cur = self._conn.execute(
-                    "UPDATE queue SET status = ?, next_attempt_at = ?, first_attempt_at = NULL,"
-                    " attempts = 0, emails_sent = 0, finished_at = NULL WHERE key = ? AND status = ?",
+                    "UPDATE queue SET status = ?, next_attempt_at = ?, first_attempt_at = NULL, attempts = 0,"
+                    " emails_sent = 0, crashes = 0, plan_sig = NULL, finished_at = NULL"
+                    " WHERE key = ? AND status = ?",
                     (STATUS_PENDING, now, key, STATUS_FAILED),
                 )
             return cur.rowcount

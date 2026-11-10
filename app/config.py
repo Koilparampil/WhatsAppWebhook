@@ -196,6 +196,11 @@ class Settings(BaseSettings):
                 problems.append("SMTP_USERNAME and SMTP_PASSWORD are required when SMTP_AUTH=password")
             if self.smtp_auth == "oauth" and not self.smtp_username:
                 problems.append("SMTP_USERNAME (the sending mailbox) is required when SMTP_AUTH=oauth")
+            if self.smtp_auth != "none" and self.smtp_security == "none":
+                problems.append(
+                    "SMTP_AUTH=password/oauth needs SMTP_SECURITY=starttls or ssl (credentials must not be"
+                    " sent over an unencrypted connection)"
+                )
         if self.mail_transport == "graph" and not self.graph_sender:
             problems.append("GRAPH_SENDER is required when MAIL_TRANSPORT=graph")
         if self.mail_transport == "graph" or self.smtp_auth == "oauth":
@@ -216,6 +221,12 @@ class Settings(BaseSettings):
             problems.append("MAIL_MAX_MESSAGE_BYTES must be at least 1,000,000")
         if self.mail_max_message_bytes > 150_000_000:
             problems.append("MAIL_MAX_MESSAGE_BYTES cannot exceed 150,000,000 (Exchange Online's ceiling)")
+        spool = Path(self.spool_dir).expanduser().resolve()
+        store = Path(self.store_path).expanduser().resolve()
+        if store == spool or spool in store.parents:
+            problems.append("STORE_PATH must not be inside SPOOL_DIR (the spool is emptied at startup)")
+        if spool == store.parent:
+            problems.append("SPOOL_DIR must be its own directory, not the directory holding STORE_PATH")
         if problems:
             raise ValueError("; ".join(problems))
         return self

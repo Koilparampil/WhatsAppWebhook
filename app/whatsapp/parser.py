@@ -287,6 +287,10 @@ def _parse_referral(obj: Any) -> Referral | None:
     )
 
 
+def _digits(value: Any) -> str:
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
 def _parse_message(
     msg: dict[str, Any],
     contacts_by_wa_id: dict[str, dict[str, Any]],
@@ -300,11 +304,13 @@ def _parse_message(
     from_phone = _str(msg.get("from"))
     from_bsuid = _str(msg.get("from_user_id"))
     contact = None
-    if from_phone and from_phone in contacts_by_wa_id:
-        contact = contacts_by_wa_id[from_phone]
+    if from_phone and _digits(from_phone) in contacts_by_wa_id:
+        contact = contacts_by_wa_id[_digits(from_phone)]
     elif from_bsuid and from_bsuid in contacts_by_user_id:
         contact = contacts_by_user_id[from_bsuid]
-    elif single_contact is not None:
+    elif single_contact is not None and not from_phone and not from_bsuid:
+        # Only a message that carries no sender identifier at all is attributed to the lone
+        # contacts[] entry; otherwise a batch could hand one sender's phone and name to another.
         contact = single_contact
     profile = (contact or {}).get("profile") if isinstance((contact or {}).get("profile"), dict) else {}
     if not from_phone and contact and contact.get("wa_id"):
@@ -389,7 +395,7 @@ def parse_webhook(payload: Any, phone_number_id_filter: str | None = None) -> Pa
             result.statuses += len(value.get("statuses") or [])
             result.value_errors.extend(_parse_error(e) for e in (value.get("errors") or []))
             contacts = [c for c in (value.get("contacts") or []) if isinstance(c, dict)]
-            by_wa_id = {str(c["wa_id"]): c for c in contacts if c.get("wa_id")}
+            by_wa_id = {_digits(c["wa_id"]): c for c in contacts if _digits(c.get("wa_id"))}
             by_user_id = {str(c["user_id"]): c for c in contacts if c.get("user_id")}
             single = contacts[0] if len(contacts) == 1 else None
             for msg in value.get("messages") or []:

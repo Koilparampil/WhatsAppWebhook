@@ -17,9 +17,10 @@ RestartSec=3
 TimeoutStopSec=40
 KillSignal=SIGTERM
 
-# Resource ceiling: well above the ~90 MB the service normally uses, well below the VM's 1 GB.
-# Peak use is roughly 6x the largest email part while it is encoded and sent (about 140 MB with the
-# default 32 MB MAIL_MAX_MESSAGE_BYTES). 600M covers parts up to about 90 MB; raise it with the limit.
+# Resource ceiling, measured while splitting and sending a 100 MB document:
+#   Graph transport: ~170 MB at the default MAIL_MAX_MESSAGE_BYTES=32 MB, ~260 MB at 95 MB, ~480 MB at 150 MB
+#   SMTP transport:  ~330 MB at 32 MB, ~450 MB at 95 MB, ~760 MB at 150 MB
+# Idle the service uses 70 to 100 MB. 600M covers every Graph setting and SMTP up to about 95 MB.
 MemoryMax=600M
 TasksMax=128
 

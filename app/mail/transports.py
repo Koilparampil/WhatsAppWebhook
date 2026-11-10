@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
+import gc
 import logging
 import smtplib
 import ssl
 import time
+from collections.abc import Callable, Iterator
 from email.message import EmailMessage
 from email.utils import getaddresses
 from typing import Protocol
@@ -24,11 +27,35 @@ log = logging.getLogger(__name__)
 
 GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 OUTLOOK_SMTP_SCOPE = "https://outlook.office365.com/.default"
-GRAPH_INLINE_ATTACHMENT_LIMIT = 3 * 1024 * 1024  # larger attachments need an upload session
+# Graph: attachments added inline must be "under 3 MB"; upload sessions take 3 MB to 150 MB.
+GRAPH_INLINE_ATTACHMENT_LIMIT = 3_000_000
 # sendMail takes the MIME message base64-encoded in the request body; Graph rejects bodies around
 # 4 MB with HTTP 413. Compare the ENCODED size and leave headroom.
 GRAPH_MIME_SEND_LIMIT = 3_500_000
 GRAPH_UPLOAD_CHUNK = 10 * 327_680  # 3.125 MiB, a multiple of 320 KiB as the upload session requires
+
+
+B64_DECODE_BLOCK_CHARS = 1 << 20
+
+
+def b64_decoded_size(text: str) -> int:
+    """Exact decoded length of a (line-wrapped) base64 string without decoding it."""
+    significant = len(text) - sum(text.count(ch) for ch in "\r\n \t")
+    padding = text[-8:].rstrip()[-2:].count("=")  # look only at the tail: no copy of the whole text
+    return significant // 4 * 3 - padding
+
+
+def iter_b64_blocks(text: str, block_chars: int = B64_DECODE_BLOCK_CHARS) -> Iterator[bytes]:
+    """Decode line-wrapped base64 in blocks so the binary never exists as one large copy."""
+    carry = ""
+    for start in range(0, len(text), block_chars):
+        piece = carry + "".join(text[start : start + block_chars].split())
+        cut = len(piece) - len(piece) % 4
+        carry = piece[cut:]
+        if cut:
+            yield binascii.a2b_base64(piece[:cut])
+    if carry:
+        raise SendError("attachment base64 data is truncated", retriable=False)
 
 
 class SendError(Exception):
@@ -184,16 +211,19 @@ class GraphTransport:
         return f"{self._s.graph_base_url.rstrip('/')}/users/{self._s.graph_sender}{path}"
 
     async def send(self, message: EmailMessage) -> str:
-        raw = await asyncio.to_thread(message.as_bytes)
-        encoded_size = 4 * ((len(raw) + 2) // 3)
-        if encoded_size <= GRAPH_MIME_SEND_LIMIT:
-            try:
-                return await self._send_mime(raw, message)
-            except SendError as exc:
-                if exc.status_code != 413:
-                    raise
-                log.warning("Graph rejected the MIME message as too large; falling back to a draft")
-        del raw
+        # The attachments' base64 text alone tells whether the MIME route can fit; when it cannot,
+        # skip flattening the whole message (a full extra copy of up to MAIL_MAX_MESSAGE_BYTES).
+        attachment_text = sum(len(part.get_payload()) for part in message.iter_attachments())
+        if 4 * ((attachment_text + 2) // 3) <= GRAPH_MIME_SEND_LIMIT:
+            raw = await asyncio.to_thread(message.as_bytes)
+            if 4 * ((len(raw) + 2) // 3) <= GRAPH_MIME_SEND_LIMIT:
+                try:
+                    return await self._send_mime(raw, message)
+                except SendError as exc:
+                    if exc.status_code != 413:
+                        raise
+                    log.warning("Graph rejected the MIME message as too large; falling back to a draft")
+            del raw
         return await self._send_as_draft(message)
 
     async def _send_mime(self, raw: bytes, message: EmailMessage) -> str:
@@ -240,37 +270,98 @@ class GraphTransport:
         if not draft_id:
             raise SendError("Graph draft creation returned no id", retriable=False)
 
-        for part in message.iter_attachments():
-            data = await asyncio.to_thread(part.get_payload, decode=True) or b""
-            name = part.get_filename() or "attachment.bin"
-            ctype = part.get_content_type()
-            if len(data) <= GRAPH_INLINE_ATTACHMENT_LIMIT:
-                att = {
-                    "@odata.type": "#microsoft.graph.fileAttachment",
-                    "name": name,
-                    "contentType": ctype,
-                    "contentBytes": base64.b64encode(data).decode("ascii"),
-                }
-                r = await self._request(
-                    "POST",
-                    self._url(f"/messages/{draft_id}/attachments"),
-                    headers={**headers, "Content-Type": "application/json"},
-                    json=att,
-                )
-                if r.status_code not in (200, 201):
-                    self._raise_for(r, "add attachment")
-            else:
-                await self._upload_large(draft_id, name, data, headers)
+        try:
+            for part in message.iter_attachments():
+                name = part.get_filename() or "attachment.bin"
+                ctype = part.get_content_type()
+                payload = part.get_payload()
+                cte = str(part.get("Content-Transfer-Encoding", "")).strip().lower()
+                if isinstance(payload, str) and cte == "base64":
+                    # decode block by block from the message's base64 text: no full binary copy
+                    size = b64_decoded_size(payload)
 
-        r = await self._request(
-            "POST", self._url(f"/messages/{draft_id}/send"), headers={**headers, "Content-Length": "0"}
-        )
-        if r.status_code not in (202, 200):
-            self._raise_for(r, "send draft")
+                    def source(text: str = payload) -> Iterator[bytes]:
+                        return iter_b64_blocks(text)
+                else:
+                    data = part.get_payload(decode=True) or b""
+                    size = len(data)
+
+                    def source(blob: bytes = data) -> Iterator[bytes]:
+                        return iter((blob,))
+
+                await self._attach(draft_id, name, ctype, size, source, headers)
+            r = await self._request(
+                "POST", self._url(f"/messages/{draft_id}/send"), headers={**headers, "Content-Length": "0"}
+            )
+            if r.status_code not in (202, 200):
+                self._raise_for(r, "send draft")
+        except SendError:
+            await self._delete_draft(draft_id, headers)
+            raise
         return message["Message-ID"] or draft_id
 
+    async def _attach(
+        self,
+        draft_id: str,
+        name: str,
+        ctype: str,
+        size: int,
+        source: Callable[[], Iterator[bytes]],
+        headers: dict[str, str],
+    ) -> None:
+        """Inline for files under 3 MB, upload session otherwise; each falls back to the other once."""
+        if size < GRAPH_INLINE_ATTACHMENT_LIMIT:
+            try:
+                await self._attach_inline(draft_id, name, ctype, b"".join(source()), headers)
+            except SendError as exc:
+                if exc.status_code != 413:
+                    raise
+                log.warning("Graph refused %s inline (413); using an upload session", name)
+                await self._upload_stream(draft_id, name, size, source(), headers)
+        else:
+            try:
+                await self._upload_stream(draft_id, name, size, source(), headers)
+            except SendError as exc:
+                if exc.status_code != 400 or "MinimumSize" not in str(exc):
+                    raise
+                log.warning("Graph says %s is too small for an upload session; attaching inline", name)
+                await self._attach_inline(draft_id, name, ctype, b"".join(source()), headers)
+
+    async def _attach_inline(
+        self, draft_id: str, name: str, ctype: str, data: bytes, headers: dict[str, str]
+    ) -> None:
+        att = {
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "name": name,
+            "contentType": ctype,
+            "contentBytes": base64.b64encode(data).decode("ascii"),
+        }
+        r = await self._request(
+            "POST",
+            self._url(f"/messages/{draft_id}/attachments"),
+            headers={**headers, "Content-Type": "application/json"},
+            json=att,
+        )
+        if r.status_code not in (200, 201):
+            self._raise_for(r, "add attachment")
+
+    async def _delete_draft(self, draft_id: str, headers: dict[str, str]) -> None:
+        """Best effort: do not leave half-built drafts behind in the relay mailbox."""
+        try:
+            await self._http.request(
+                "DELETE", self._url(f"/messages/{draft_id}"), headers=headers, timeout=30
+            )
+        except httpx.HTTPError as exc:
+            log.warning("could not delete unsent draft %s: %r", draft_id, exc)
+
     async def _upload_large(self, draft_id: str, name: str, data: bytes, headers: dict[str, str]) -> None:
-        session_payload = {"AttachmentItem": {"attachmentType": "file", "name": name, "size": len(data)}}
+        await self._upload_stream(draft_id, name, len(data), iter((data,)), headers)
+
+    async def _upload_stream(
+        self, draft_id: str, name: str, total: int, blocks: Iterator[bytes], headers: dict[str, str]
+    ) -> None:
+        """createUploadSession, then PUT sequential ranges (no Authorization header, per Graph docs)."""
+        session_payload = {"AttachmentItem": {"attachmentType": "file", "name": name, "size": total}}
         r = await self._request(
             "POST",
             self._url(f"/messages/{draft_id}/attachments/createUploadSession"),
@@ -282,20 +373,36 @@ class GraphTransport:
         upload_url = r.json().get("uploadUrl")
         if not upload_url:
             raise SendError("Graph upload session returned no uploadUrl", retriable=False)
-        total = len(data)
+        buffer = bytearray()
         offset = 0
-        while offset < total:
-            chunk = data[offset : offset + GRAPH_UPLOAD_CHUNK]
+
+        async def put(chunk: bytes) -> None:
+            nonlocal offset
             end = offset + len(chunk) - 1
             put_headers = {
                 "Content-Type": "application/octet-stream",
                 "Content-Length": str(len(chunk)),
                 "Content-Range": f"bytes {offset}-{end}/{total}",
             }
-            r = await self._request("PUT", upload_url, headers=put_headers, content=chunk)
-            if r.status_code not in (200, 201, 202):
-                self._raise_for(r, "upload chunk")
+            resp = await self._request("PUT", upload_url, headers=put_headers, content=chunk)
+            if resp.status_code not in (200, 201, 202):
+                self._raise_for(resp, "upload chunk")
             offset += len(chunk)
+
+        for block in blocks:
+            buffer += block
+            while len(buffer) >= GRAPH_UPLOAD_CHUNK:
+                await put(bytes(buffer[:GRAPH_UPLOAD_CHUNK]))
+                del buffer[:GRAPH_UPLOAD_CHUNK]
+                # httpx responses and requests reference each other; without a young-generation
+                # collection every uploaded chunk would stay in memory until the next GC pass
+                gc.collect(1)
+        if buffer:
+            await put(bytes(buffer))
+        del buffer
+        gc.collect(1)
+        if offset != total:
+            raise SendError(f"attachment {name}: uploaded {offset} of {total} bytes", retriable=False)
 
     async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
         try:

@@ -16,7 +16,9 @@ import phonenumbers
 from phonenumbers import NumberParseException, PhoneNumberFormat
 
 _EXTENSION_RE = re.compile(r"(?i)[\s,]*(?:ext\.?|extension|x|#)\s*\.?\s*\d{1,6}\s*$")
-_SPLIT_RE = re.compile(r"\s*(?:/|;|\||,|\bor\b|\n)\s*", re.IGNORECASE)
+# separators between several numbers in one field: punctuation, newlines, or words ("Fax", "Cell",
+# "or"); single letters such as the "x" of an extension are left for the extension stripper
+_SPLIT_RE = re.compile(r"\s*(?:/|;|\||,|\n|[A-Za-z]{2,}[.:]?)\s*")
 _EMAIL_RE = re.compile(r"^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$")
 _EMAIL_KEY_RE = re.compile(r"^email\d*$", re.IGNORECASE)
 SUFFIX_LEN = 10

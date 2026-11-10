@@ -124,14 +124,8 @@ class Directory:
                     errors.append(f"{entity}: {exc}")
                     log.warning("CRM refresh failed for %s: %s", entity, exc)
                     continue
-                records = []
-                for obj in raw:
-                    rec = record_from_api(entity, obj, self._region)
-                    if rec is None:
-                        continue
-                    if not rec.active and not self._include_inactive:
-                        continue
-                    records.append(rec)
+                # phone parsing for thousands of records is CPU work: keep it off the event loop
+                records = await asyncio.to_thread(self._build_records, entity, raw)
                 self._by_entity[entity] = _EntityIndex(entity, records, self._clock(), len(raw))
                 counts[entity] = len(records)
             if counts:
@@ -143,6 +137,17 @@ class Directory:
                 self.last_error = "; ".join(errors) or "no entities configured"
                 raise CrmError(f"CRM refresh failed for every entity: {self.last_error}")
             return counts
+
+    def _build_records(self, entity: str, raw: list[dict[str, Any]]) -> list[CrmRecord]:
+        records: list[CrmRecord] = []
+        for obj in raw:
+            rec = record_from_api(entity, obj, self._region)
+            if rec is None:
+                continue
+            if not rec.active and not self._include_inactive:
+                continue
+            records.append(rec)
+        return records
 
     def _rebuild(self) -> None:
         by_e164: dict[str, list[MatchCandidate]] = {}

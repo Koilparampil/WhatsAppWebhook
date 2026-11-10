@@ -103,6 +103,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 for task in pending:
                     log.warning("task %s did not stop in time; cancelling", task.get_name())
                     task.cancel()
+                if pending:
+                    # let the cancelled worker hand its item back to the queue before the store closes
+                    await asyncio.wait(pending, timeout=5)
                 for task in done:
                     if not task.cancelled() and task.exception():
                         log.error("task %s crashed: %r", task.get_name(), task.exception())

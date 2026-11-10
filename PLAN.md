@@ -86,7 +86,7 @@ Read from the OpenAPI 3.0.4 document at `/swagger/v1/swagger.json` (86 paths) an
 ### 2.3 Google Cloud, minimal footprint
 
 - **Free Tier**: one non-preemptible **e2-micro** (2 shared vCPUs, 0.25 vCPU sustained, 1 GB RAM) per billing account in `us-west1`, `us-central1` or `us-east1`, plus 30 GB-months standard persistent disk and 1 GB/month North-America egress. The fetched free-tier page does not mention the external IPv4 address; Google has charged for in-use external IPv4 since 2024 and announced the free e2-micro keeps a no-cost one, but budget ≈ $3.65/month in case it is billed.
-- Expected footprint: Caddy ≈ 30–40 MB RSS, Python app ≈ 70–90 MB RSS, idle CPU ≈ 0. Comfortably inside 1 GB with a small swap file as a safety net.
+- Expected footprint: Caddy ≈ 30–40 MB RSS, Python app ≈ 70–100 MB RSS idle and ≈ 170 MB peak while splitting a 100 MB document through Graph (measured), idle CPU ≈ 0. Comfortably inside 1 GB with a small swap file as a safety net.
 - Everything runs as two systemd services on Debian (no Docker, no Kubernetes, no load balancer) to keep resources and cost minimal.
 
 ### 2.4 Caddy
@@ -271,7 +271,7 @@ LOG_LEVEL=INFO
   }
   ```
 - System user `whwebhook`; code in `/opt/whatsapp-webhook` with a venv; env file `/etc/whatsapp-webhook/env` (created from `.env.example` on first install, never overwritten); data dir `/var/lib/whatsapp-webhook`.
-- systemd unit: `uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1`, `Restart=always`, hardening (`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`, `ReadWritePaths=/var/lib/whatsapp-webhook`, `MemoryMax=400M`).
+- systemd unit: `uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1`, `Restart=always`, hardening (`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`, `ReadWritePaths=/var/lib/whatsapp-webhook`, `MemoryMax=600M`, syscall filter).
 - Smoke test at the end: `curl -s https://wa.yourdomain.tld/webhook?hub.mode=subscribe&hub.verify_token=…&hub.challenge=123` → `123`.
 
 ### 6.3 Meta side (documented step-by-step in README)

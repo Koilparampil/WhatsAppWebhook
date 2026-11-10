@@ -7,12 +7,16 @@ email over ``MAIL_MAX_MESSAGE_BYTES``, the file is split into numbered parts (``
 
 from __future__ import annotations
 
+import base64
 import html
+import json
 import math
 import re
+import shlex
+import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from email.message import EmailMessage
+from email.message import EmailMessage, MIMEPart
 from email.policy import SMTP
 from email.utils import formataddr, formatdate
 from pathlib import Path
@@ -23,6 +27,7 @@ import phonenumbers
 from app.config import Settings
 from app.crm.directory import LookupResult, LookupStatus
 from app.whatsapp.media import DownloadedMedia
+from app.whatsapp.parser import MEDIA_TYPES as MEDIA_KINDS
 from app.whatsapp.parser import InboundMessage
 
 BASE64_RAW_LINE = 57  # raw bytes per 76-char base64 line
@@ -34,6 +39,7 @@ MIN_CHUNK_BYTES = 512 * 1024
 # than the measured body size) keeps the chunk boundaries identical across retries, so a message
 # whose later parts failed can resume without re-sending or mis-cutting earlier parts.
 BODY_RESERVE = 256 * 1024
+ATTACHABLE_MAINTYPES = {"image", "audio", "video", "text", "application", "font", "model"}
 
 
 class ComposeError(Exception):
@@ -70,14 +76,33 @@ def chunk_size_for(limit: int, base_size: int = 0) -> int:
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
+def strip_format_chars(value: str) -> str:
+    """Remove Unicode format characters (category Cf: bidi overrides, zero-width joiners, BOM...).
+
+    They are invisible but let a sender reverse how a name or file extension is displayed.
+    """
+    return "".join(ch for ch in value if unicodedata.category(ch) != "Cf")
+
+
 def _clean_header_text(value: str | None) -> str:
-    """Make sender-controlled text safe for a header: one line, no control characters.
+    """Make sender-controlled text safe for a header: one line, no control or format characters.
 
     ``str.split()`` also folds Unicode line/paragraph separators (U+2028, U+2029, U+0085, VT, FF…)
     which the email package would otherwise reject as multi-line header values.
     """
     collapsed = " ".join((value or "").split())
-    return _CONTROL_CHARS.sub("", collapsed).strip()
+    return strip_format_chars(_CONTROL_CHARS.sub("", collapsed)).strip()
+
+
+def _display_name_safe(value: str) -> str:
+    """A From display name must not look like an address.
+
+    Angle brackets, quotes and backslashes are dropped, and an ``@`` inside a word (``a@b.com``)
+    becomes `` at ``; a leading ``@`` (the WhatsApp username marker) is kept.
+    """
+    value = re.sub(r'[<>"\\]', " ", value)
+    value = re.sub(r"(?<=\S)@(?=\S)", " at ", value)
+    return _clean_header_text(value)
 
 
 def _message_id(wamid: str, domain: str, part: int | None = None) -> str:
@@ -204,7 +229,7 @@ def _content_lines(msg: InboundMessage) -> list[str]:
             "WhatsApp could not deliver this message type to the webhook (unsupported by the Cloud API)."
         )
     else:
-        out.append(f"Message of type '{msg.type}' (not rendered; raw payload is in the details section).")
+        out.append(f"Message of type '{msg.type}' (not rendered; the raw message is in the details section).")
     for err in msg.errors:
         out.append(f"WhatsApp error: {err.describe()}")
     return out
@@ -256,17 +281,49 @@ def _attachment_lines(
         )
         out.append("Save all parts to one folder, then rebuild the original file:")
         out.append("  Windows (Command Prompt):")
-        out.append("    copy /b " + "+".join(f'"{n}"' for n in chunk_names) + f' "{media.filename}"')
+        out.append("    " + _windows_rebuild_command(media.filename, chunk_names))
         out.append("  macOS / Linux (Terminal):")
-        out.append("    cat " + " ".join(f"'{n}'" for n in chunk_names) + f" > '{media.filename}'")
+        out.append("    " + _posix_rebuild_command(media.filename, chunk_names))
         out.append("  Or right-click the .001 file in 7-Zip and choose 'Combine files'.")
     return out
+
+
+MAX_LISTED_PARTS = 12  # beyond this the instructions use a wildcard so the body stays small
+
+
+def _cmd_quote(name: str) -> str:
+    """Quote for cmd.exe: safe_filename already removes the characters cmd cannot quote (", %)."""
+    return '"' + name.replace('"', "").replace("%", "_") + '"'
+
+
+def _windows_rebuild_command(filename: str, chunk_names: list[str]) -> str:
+    if len(chunk_names) <= MAX_LISTED_PARTS:
+        return "copy /b " + "+".join(_cmd_quote(n) for n in chunk_names) + " " + _cmd_quote(filename)
+    return "copy /b " + _cmd_quote(filename + ".???") + " " + _cmd_quote(filename)
+
+
+def _posix_rebuild_command(filename: str, chunk_names: list[str]) -> str:
+    if len(chunk_names) <= MAX_LISTED_PARTS:
+        return "cat " + " ".join(shlex.quote(n) for n in chunk_names) + " > " + shlex.quote(filename)
+    return "cat " + shlex.quote(filename) + ".[0-9][0-9][0-9] > " + shlex.quote(filename)
+
+
+KNOWN_TYPES = {
+    "text", "image", "video", "audio", "document", "sticker", "location", "contacts", "interactive",
+    "button", "reaction", "order", "system", "request_welcome", "unsupported",
+}  # fmt: skip
+RAW_DETAILS_LIMIT = 2000
 
 
 def _details_lines(msg: InboundMessage) -> list[str]:
     out = [f"WhatsApp message id: {msg.wamid}"]
     if msg.business_phone_number_id:
         out.append(f"Business phone number id: {msg.business_phone_number_id}")
+    if msg.type not in KNOWN_TYPES or (msg.media is None and msg.type in MEDIA_KINDS):
+        raw = json.dumps(msg.raw, ensure_ascii=False, sort_keys=True)
+        if len(raw) > RAW_DETAILS_LIMIT:
+            raw = raw[:RAW_DETAILS_LIMIT] + " …(truncated)"
+        out.append(f"Raw message: {raw}")
     if msg.context:
         if msg.context.quoted_message_id:
             out.append(f"In reply to message: {msg.context.quoted_message_id}")
@@ -306,6 +363,9 @@ def _render_text(sections: list[tuple[str, list[str]]], header: list[tuple[str, 
     return "\n".join(lines) + "\n"
 
 
+_MAPS_LINK = re.compile(r"(https://www\.google\.com/maps/search/\?api=1&amp;query=[-0-9.,]+)")
+
+
 def _render_html(sections: list[tuple[str, list[str]]], header: list[tuple[str, str]]) -> str:
     esc = html.escape
     rows = "".join(
@@ -318,7 +378,8 @@ def _render_html(sections: list[tuple[str, list[str]]], header: list[tuple[str, 
         if not body:
             continue
         content = "<br>".join(esc(line) if line else "&nbsp;" for line in body)
-        content = re.sub(r"(https?://[^\s<]+)", r'<a href="\1">\1</a>', content)
+        # Only the map link the service generated becomes clickable; sender-supplied URLs stay text.
+        content = _MAPS_LINK.sub(r'<a href="\1">\1</a>', content)
         blocks.append(
             f'<h3 style="margin:18px 0 6px;font-size:14px;color:#222">{esc(title)}</h3>'
             f'<div style="white-space:pre-wrap;font-family:inherit">{content}</div>'
@@ -346,6 +407,12 @@ class EmailPlan:
     chunk_size: int
     chunk_names: list[str]
 
+    @property
+    def signature(self) -> str:
+        """Identifies how the media was cut; a resumed send must use the same cut."""
+        size = self.media.size if self.media is not None else 0
+        return f"{self.part_count}x{self.chunk_size}/{size}"
+
 
 def plan_emails(
     msg: InboundMessage,
@@ -353,25 +420,70 @@ def plan_emails(
     media: DownloadedMedia | None,
     settings: Settings,
 ) -> EmailPlan:
-    """Decide how many emails ``msg`` needs (more than one only when media must be split)."""
+    """Decide how many emails ``msg`` needs (more than one only when media must be split).
+
+    The single-or-split decision and the chunk size depend only on the file size and
+    ``MAIL_MAX_MESSAGE_BYTES`` (never on the measured body, which changes between attempts with the
+    CRM result), so a retry after a partial send reaches the same plan.
+    """
     chunk_names: list[str] = []
     part_count = 1
     chunk_size = 0
+    limit = settings.mail_max_message_bytes
     if media is not None:
-        base = _assemble(msg, lookup, media, settings, 1, 1, [])
-        base_size = len(base.as_bytes())
-        if base_size + encoded_attachment_size(media.size) + SAFETY_MARGIN <= settings.mail_max_message_bytes:
+        if BODY_RESERVE + encoded_attachment_size(media.size) + SAFETY_MARGIN <= limit:
             part_count = 1
         elif not settings.mail_split_large_media:
             raise ComposeError(
                 f"attachment {media.filename} ({media.size} bytes) exceeds MAIL_MAX_MESSAGE_BYTES"
-                f" ({settings.mail_max_message_bytes}) and splitting is disabled"
+                f" ({limit}) and splitting is disabled"
             )
         else:
-            chunk_size = chunk_size_for(settings.mail_max_message_bytes, base_size)
+            chunk_size = chunk_size_for(limit)
             part_count = max(1, math.ceil(media.size / chunk_size))
             chunk_names = [f"{media.filename}.{i:03d}" for i in range(1, part_count + 1)]
+        # The body of the real first part (with the rebuild instructions) must fit the reserve.
+        probe = _assemble(msg, lookup, media, settings, 1, part_count, chunk_names)
+        body_size = len(probe.as_bytes())
+        if body_size > BODY_RESERVE:
+            raise ComposeError(f"email body ({body_size} bytes) exceeds the {BODY_RESERVE}-byte reserve")
     return EmailPlan(msg, lookup, media, settings, part_count, chunk_size, chunk_names)
+
+
+ENCODE_BLOCK_BYTES = BASE64_RAW_LINE * 2048  # whole 76-character lines per block
+
+
+def encode_file_slice_base64(path: Path, offset: int, length: int) -> str:
+    """Base64 text (76-character lines) of ``length`` bytes at ``offset`` of ``path``.
+
+    Encoding block by block straight from the spooled file avoids holding the raw bytes and the
+    email package's per-line list at the same time (it costs about twice the encoded size at peak,
+    instead of roughly four times).
+    """
+    pieces: list[str] = []
+    remaining = length
+    with path.open("rb") as fh:
+        fh.seek(offset)
+        while remaining > 0:
+            block = fh.read(min(ENCODE_BLOCK_BYTES, remaining))
+            if not block:
+                raise ComposeError(f"spooled media ended early ({remaining} bytes missing)")
+            remaining -= len(block)
+            pieces.append(base64.encodebytes(block).decode("ascii"))
+    return "".join(pieces)
+
+
+def _attach_base64(message: EmailMessage, encoded: str, maintype: str, subtype: str, filename: str) -> None:
+    """Attach already-encoded data; same headers and RFC 2231 file name encoding as add_attachment."""
+    part = MIMEPart(policy=message.policy)
+    part["Content-Type"] = f"{maintype}/{subtype}"
+    part["Content-Transfer-Encoding"] = "base64"
+    part["Content-Disposition"] = "attachment"
+    part.set_param("filename", filename, header="Content-Disposition")
+    part.set_payload(encoded)
+    if message.get_content_type() != "multipart/mixed":
+        message.make_mixed()
+    message.attach(part)
 
 
 def build_part(plan: EmailPlan, index: int) -> OutgoingEmail:
@@ -386,22 +498,23 @@ def build_part(plan: EmailPlan, index: int) -> OutgoingEmail:
         attachment_name: str | None = None
         if media is not None:
             if plan.part_count == 1:
-                data = Path(media.path).read_bytes()
                 attachment_name = media.filename
                 mime = (media.mime_type or "application/octet-stream").split(";")[0].strip().lower()
                 maintype, _, subtype = mime.partition("/")
-                if not subtype or not re.fullmatch(r"[a-z0-9][a-z0-9!#$&^_.+-]*", maintype):
+                if maintype not in ATTACHABLE_MAINTYPES or not re.fullmatch(
+                    r"[a-z0-9][a-z0-9!#$&^_.+-]*", subtype
+                ):
+                    # message/* and multipart/* cannot carry base64; unknown types become binary
                     maintype, subtype = "application", "octet-stream"
-                message.add_attachment(data, maintype=maintype, subtype=subtype, filename=attachment_name)
+                offset, length = 0, media.size
             else:
                 attachment_name = plan.chunk_names[index - 1]
-                with Path(media.path).open("rb") as fh:
-                    fh.seek((index - 1) * plan.chunk_size)
-                    data = fh.read(plan.chunk_size)
-                message.add_attachment(
-                    data, maintype="application", subtype="octet-stream", filename=attachment_name
-                )
-            del data
+                maintype, subtype = "application", "octet-stream"
+                offset = (index - 1) * plan.chunk_size
+                length = min(plan.chunk_size, media.size - offset)
+            encoded = encode_file_slice_base64(Path(media.path), offset, length)
+            _attach_base64(message, encoded, maintype, subtype, attachment_name)
+            del encoded
     except ValueError as exc:  # the email package refuses a header or body it cannot represent
         raise ComposeError(f"could not assemble email: {exc}") from exc
     return OutgoingEmail(
@@ -431,7 +544,9 @@ def _assemble(
 ) -> EmailMessage:
     message = EmailMessage(policy=SMTP)
     domain = settings.mail_from_domain
-    display = _clean_header_text(settings.mail_from_name_template.format(display_name=msg.sender_label))
+    display = _clean_header_text(
+        settings.mail_from_name_template.format(display_name=_display_name_safe(msg.sender_label))
+    )
     message["From"] = formataddr((display, settings.mail_from))
     message["To"] = ", ".join(settings.mail_to_list)
     if lookup.status is LookupStatus.MATCHED and lookup.reply_to:

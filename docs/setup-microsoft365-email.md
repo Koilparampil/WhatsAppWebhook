@@ -145,8 +145,10 @@ Get-Mailbox whatsapp@vship2000.com, ops@vship2000.com | Format-List Name,MaxSend
 ```
 
 Then, in `/etc/whatsapp-webhook/env`, set `MAIL_MAX_MESSAGE_BYTES=95000000` (about 10% below the new
-limit) and restart the service. The service's memory ceiling in the systemd unit (`MemoryMax=600M`)
-is sized for parts up to roughly 90 MB; raise it together with the limit. The hard maximum is 150 MB,
+limit) and restart the service. With the Graph transport the service's measured peak memory stays
+under 500 MB even at the 150 MB maximum, so the systemd ceiling (`MemoryMax=600M`) and the e2-micro
+need no change. (The SMTP fallback needs more: raise `MemoryMax` to 900M before going above 95 MB
+with SMTP.) The hard maximum is 150 MB,
 Outlook mobile still caps at 33 MB per message, and Outlook on the web at 112 MB, so very large
 emails can only be opened in desktop Outlook.
 

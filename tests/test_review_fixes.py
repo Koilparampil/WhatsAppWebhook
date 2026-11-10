@@ -96,88 +96,176 @@ async def test_lookup_crash_degrades_to_lookup_error(tmp_path, clock):
 
 
 # ----------------------------------------------------------------------------- worker resilience
-async def test_worker_loop_survives_store_errors(tmp_path):
-    clock = FakeClock()
-    settings = make_settings(tmp_path, worker_poll_seconds=0.05)
+def _worker(tmp_path, clock, transport=None, **overrides):
+    settings = make_settings(tmp_path, **overrides)
     store = Store(settings.store_path)
-    transport = FakeTransport()
     worker = Worker(
-        settings, store, FakeDirectory(matched_lookup()), transport, httpx.AsyncClient(), clock=clock
+        settings,
+        store,
+        FakeDirectory(matched_lookup()),
+        transport or FakeTransport(),
+        httpx.AsyncClient(),
+        clock=clock,
     )
     worker.error_pause_seconds = 0.05
+    worker.outcome_write_delays = (0.01, 0.01, 0.01)
+    return worker, store
 
-    original_mark_done = store.mark_done
+
+async def _run_until(worker, store, predicate, limit_seconds=5.0):
+    stop = asyncio.Event()
+    task = asyncio.create_task(worker.run(stop))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + limit_seconds
+    while loop.time() < deadline and not predicate():  # noqa: ASYNC110 - polling store state in a test
+        await asyncio.sleep(0.02)
+    stop.set()
+    worker.wakeup.set()
+    await asyncio.wait_for(task, timeout=5)
+
+
+async def test_busy_database_on_outcome_write_is_retried_without_a_loop_error(tmp_path):
+    worker, store = _worker(tmp_path, FakeClock(), worker_poll_seconds=0.05)
+    original = store.mark_done
     calls = {"n": 0}
 
     def flaky_mark_done(item_id, emails_sent=0, now=None):
         calls["n"] += 1
-        if calls["n"] == 1:
+        if calls["n"] <= 2:
             raise sqlite3.OperationalError("database is locked")
-        return original_mark_done(item_id, emails_sent, now)
+        return original(item_id, emails_sent, now)
 
     store.mark_done = flaky_mark_done  # type: ignore[method-assign]
-    p1, p2 = text_payload(wamid="wamid.A"), text_payload(wamid="wamid.B")
-    store.enqueue(KIND_MESSAGE, "wamid.A", {"envelope": p1}, clock())
-    store.enqueue(KIND_MESSAGE, "wamid.B", {"envelope": p2}, clock())
-
-    stop = asyncio.Event()
-    task = asyncio.create_task(worker.run(stop))
-    for _ in range(100):
-        await asyncio.sleep(0.05)
-        if store.get("wamid.B").status == "done":
-            break
-    stop.set()
-    worker.wakeup.set()
-    await asyncio.wait_for(task, timeout=5)
-    assert worker.loop_errors == 1
-    assert store.get("wamid.B").status == "done"
-    # wamid.A was sent but its completion could not be recorded: it is retried on the next pass,
-    # exactly like a crash between send and mark_done (at-least-once delivery)
-    assert store.get("wamid.A").status in ("done", "pending", "processing")
+    store.enqueue(KIND_MESSAGE, "wamid.A", {"envelope": text_payload(wamid="wamid.A")}, FakeClock()())
+    await _run_until(worker, store, lambda: store.get("wamid.A").status == "done")
+    assert store.get("wamid.A").status == "done"
+    assert worker.loop_errors == 0
+    assert len(worker.transport.sent) == 1  # no duplicate email
 
 
-def test_recover_interrupted_applies_backoff_and_crash_cap(tmp_path, clock):
-    settings = make_settings(tmp_path, worker_max_crash_attempts=3)
-    store = Store(settings.store_path)
-    worker = Worker(
-        settings, store, FakeDirectory(matched_lookup()), FakeTransport(), httpx.AsyncClient(), clock=clock
+async def test_persistent_store_error_is_survived_and_the_stuck_row_requeued(tmp_path):
+    worker, store = _worker(tmp_path, FakeClock(), worker_poll_seconds=0.05)
+    original = store.mark_done
+    calls = {"n": 0}
+
+    def broken_then_ok(item_id, emails_sent=0, now=None):
+        calls["n"] += 1
+        if calls["n"] <= 4:  # more failures than the write retries
+            raise sqlite3.OperationalError("disk I/O error")
+        return original(item_id, emails_sent, now)
+
+    store.mark_done = broken_then_ok  # type: ignore[method-assign]
+    clock = worker.clock
+    store.enqueue(KIND_MESSAGE, "wamid.A", {"envelope": text_payload(wamid="wamid.A")}, clock())
+    store.enqueue(KIND_MESSAGE, "wamid.B", {"envelope": text_payload(wamid="wamid.B")}, clock())
+    await _run_until(
+        worker, store, lambda: store.get("wamid.A").status == "done" and store.get("wamid.B").status == "done"
     )
-    for key, attempts in (("wamid.once", 1), ("wamid.poison", 3)):
-        store.enqueue(KIND_MESSAGE, key, {"envelope": text_payload(wamid=key)}, clock())
-        for _ in range(attempts):
-            item = store.claim_next(clock())  # claim increments attempts; leave it 'processing'
-            assert item is not None and item.key == key
-            if _ < attempts - 1:
-                store.mark_retry(item.id, clock(), "x")
-    assert {i.key for i in store.list_by_status(STATUS_PROCESSING)} == {"wamid.once", "wamid.poison"}
+    assert worker.loop_errors == 1
+    assert store.get("wamid.A").status == "done"  # re-queued from 'processing', not stuck
+    assert store.get("wamid.B").status == "done"
+    assert store.list_by_status(STATUS_PROCESSING) == []
 
+
+def test_recover_interrupted_counts_crashes_not_attempts(tmp_path, clock):
+    worker, store = _worker(tmp_path, clock, worker_max_crash_attempts=3)
+    store.enqueue(KIND_MESSAGE, "wamid.flaky", {"envelope": text_payload(wamid="wamid.flaky")}, clock())
+    # two ordinary failures, then the process dies during the third attempt
+    for _ in range(3):
+        item = store.claim_next(clock())
+        assert item is not None
+        if item.attempts < 3:
+            store.mark_retry(item.id, clock(), "451 try later")
     worker.recover_interrupted()
+    item = store.get("wamid.flaky")
+    assert item.status == STATUS_PENDING and item.crashes == 1 and item.next_attempt_at > clock()
+    assert "stopped unexpectedly" in item.last_error
 
-    once = store.get("wamid.once")
-    assert once.status == STATUS_PENDING and once.next_attempt_at > clock()
-    assert "process died" in once.last_error
-    poison = store.get("wamid.poison")
-    assert poison.status == STATUS_FAILED and "interrupted" in poison.last_error
+    # the same message kills the process two more times -> dead letter with one alert
+    for _ in range(2):
+        clock.now = store.next_due_at()
+        assert store.claim_next(clock()).key == "wamid.flaky"
+        worker.recover_interrupted()
+    item = store.get("wamid.flaky")
+    assert item.status == STATUS_FAILED and item.crashes == 3
+    assert "3 interrupted attempt(s)" in item.last_error
     alerts = [i for i in store.list_by_status(STATUS_PENDING) if i.kind == KIND_ALERT]
-    assert len(alerts) == 1 and "wamid.poison" in alerts[0].payload["subject"]
+    assert len(alerts) == 1 and "wamid.flaky" in alerts[0].payload["subject"]
+    assert store.requeue("wamid.flaky", clock()) == 1
+    assert store.get("wamid.flaky").crashes == 0
 
 
-def test_clean_spool_removes_stale_files(tmp_path, clock):
-    settings = make_settings(tmp_path)
-    spool = settings.spool_dir
-    (spool / "wamid_X").mkdir(parents=True)
+async def test_graceful_shutdown_requeues_without_counting_a_crash(tmp_path, clock):
+    class HangingTransport(FakeTransport):
+        async def send(self, message):
+            await asyncio.sleep(3600)
+
+    worker, store = _worker(tmp_path, clock, transport=HangingTransport())
+    store.enqueue(KIND_MESSAGE, "wamid.slow", {"envelope": text_payload(wamid="wamid.slow")}, clock())
+    item = store.claim_next(clock())
+    task = asyncio.create_task(worker.handle(item))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    row = store.get("wamid.slow")
+    assert row.status == STATUS_PENDING and row.crashes == 0
+    assert "service stopped" in row.last_error
+    worker.recover_interrupted()  # nothing left in processing, nothing counted
+    assert store.get("wamid.slow").crashes == 0
+
+
+def test_store_migrates_an_older_database(tmp_path):
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE queue (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL,"
+        " key TEXT NOT NULL UNIQUE, payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',"
+        " attempts INTEGER NOT NULL DEFAULT 0, received_at REAL NOT NULL, first_attempt_at REAL,"
+        " next_attempt_at REAL NOT NULL, last_error TEXT, finished_at REAL,"
+        " emails_sent INTEGER NOT NULL DEFAULT 0);"
+        "INSERT INTO queue (kind, key, payload, received_at, next_attempt_at)"
+        " VALUES ('message', 'k', '{}', 1, 1);"
+    )
+    conn.commit()
+    conn.close()
+    store = Store(db)
+    item = store.get("k")
+    assert item.crashes == 0 and item.plan_sig is None
+
+
+def test_clean_spool_only_cleans_a_marked_directory(tmp_path, clock):
+    worker, _store = _worker(tmp_path, clock)
+    spool = worker.settings.spool_dir
+    assert worker.clean_spool() == 0  # creates the directory and its marker
+    assert (spool / ".whatsapp-webhook-spool").exists()
+    (spool / "wamid_X").mkdir()
     (spool / "wamid_X" / "123.part").write_bytes(b"partial")
     (spool / "loose.bin").write_bytes(b"x")
-    worker = Worker(
-        settings,
-        Store(settings.store_path),
-        FakeDirectory(matched_lookup()),
-        FakeTransport(),
-        httpx.AsyncClient(),
-        clock=clock,
-    )
     assert worker.clean_spool() == 2
-    assert list(spool.iterdir()) == []
+    assert [p.name for p in spool.iterdir()] == [".whatsapp-webhook-spool"]
+
+    other = tmp_path / "not-a-spool"
+    other.mkdir()
+    (other / "important.txt").write_text("keep me")
+    worker2, _ = _worker(tmp_path / "w2", clock, spool_dir=other)
+    assert worker2.clean_spool() == 0
+    assert (other / "important.txt").exists()
+
+
+def test_spool_and_store_paths_must_not_overlap(tmp_path):
+    with pytest.raises(ValidationError, match="STORE_PATH must not be inside SPOOL_DIR"):
+        make_settings(tmp_path, spool_dir=tmp_path / "data", store_path=tmp_path / "data" / "spool" / "q.db")
+    with pytest.raises(ValidationError, match="SPOOL_DIR must be its own directory"):
+        make_settings(tmp_path, spool_dir=tmp_path / "data", store_path=tmp_path / "data" / "q.db")
+
+
+def test_smtp_credentials_require_encryption(tmp_path):
+    with pytest.raises(ValidationError, match="unencrypted"):
+        make_settings(
+            tmp_path, smtp_security="none", smtp_auth="password", smtp_username="u", smtp_password="p"
+        )
+    make_settings(tmp_path, smtp_security="none", smtp_auth="none")  # anonymous relay is allowed
 
 
 # ----------------------------------------------------------------------------- Graph size threshold

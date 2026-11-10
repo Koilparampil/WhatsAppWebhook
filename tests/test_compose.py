@@ -148,7 +148,7 @@ def test_split_large_attachment_into_parts(tmp_path):
         rebuilt += atts[0].get_payload(decode=True)
         body = m.get_body(("plain",)).get_content()
         assert f"part {index} of {len(emails)}" in body
-        assert "copy /b" in body and "cat 'invoice.pdf.001'" in body
+        assert 'copy /b "invoice.pdf.001"+' in body and "cat invoice.pdf.001 invoice.pdf.002" in body
         if index > 1:
             assert m["In-Reply-To"] == emails[0].message["Message-ID"]
             assert m["Message-ID"] != emails[0].message["Message-ID"]
