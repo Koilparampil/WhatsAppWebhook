@@ -61,13 +61,16 @@ sudo systemctl restart whatsapp-webhook && journalctl -u whatsapp-webhook -f
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
-cp .env.example .env            # fill in values; CRM_ENABLED=false and SMTP to a local sink work for dev
+cp .env.example .env            # fill in values; for dev see the local sink settings below
 ruff check . && ruff format --check . && pytest -q
 python -m app.cli run           # http://127.0.0.1:8000
 ```
 
-A local SMTP sink for development: `python -m aiosmtpd -n -l 127.0.0.1:2525` (then
-`SMTP_HOST=127.0.0.1 SMTP_PORT=2525 SMTP_SECURITY=none SMTP_AUTH=none`).
+For development without Microsoft 365 or the CRM, run a local SMTP sink with
+`python -m aiosmtpd -n -l 127.0.0.1:2525` and set in `.env`:
+`MAIL_TRANSPORT=smtp SMTP_HOST=127.0.0.1 SMTP_PORT=2525 SMTP_SECURITY=none SMTP_AUTH=none
+CRM_ENABLED=false`, and give the `OAUTH_*`, `CRM_*` and `WA_*` placeholders any non-placeholder
+values (secrets need at least 16 characters).
 
 ## Behaviour summary
 
@@ -81,6 +84,9 @@ A local SMTP sink for development: `python -m aiosmtpd -n -l 127.0.0.1:2525` (th
   refreshed every 15 minutes and on a cache miss. Match ranking: exact number > suffix, mobile >
   business phone, active > inactive, most recently updated.
 - Emails: fixed `From` mailbox with the sender's name in the display part, `Reply-To` = all customer
-  emails (configurable), deterministic `Message-ID`, threading headers for quoted replies, `X-WhatsApp-*`
-  headers for mail rules, text + HTML bodies, attachments, numbered parts when oversized.
-- Failures retry for 10 minutes, then dead-letter with an alert email; `replay-failed` re-queues.
+  emails (configurable), `X-WhatsApp-*` headers for mail rules, text + HTML bodies, attachments,
+  numbered parts when oversized. Deterministic `Message-ID`s and threading headers for quoted replies
+  apply on SMTP and to Graph emails under about 3.5 MB encoded; larger Graph emails are sent as drafts
+  and carry Exchange's own `Message-ID` and at most five custom headers.
+- Failures retry for 10 minutes (longer if Microsoft asks to wait with `Retry-After`), then
+  dead-letter with an alert email; alerts retry for 12 hours; `replay-failed` re-queues.

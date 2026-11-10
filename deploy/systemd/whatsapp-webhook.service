@@ -3,6 +3,9 @@ Description=WhatsApp to email forwarder (webhook + queue worker)
 Documentation=https://github.com/Koilparampil/WhatsAppWebhook
 After=network-online.target
 Wants=network-online.target
+# safety net: stop restarting after 5 failed starts within 5 minutes
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -13,6 +16,8 @@ EnvironmentFile=/etc/whatsapp-webhook/env
 ExecStart=/opt/whatsapp-webhook/.venv/bin/python -m app.cli run
 Restart=always
 RestartSec=3
+# exit code 78 (EX_CONFIG) means the env file is invalid: restarting cannot help until it is fixed
+RestartPreventExitStatus=78
 # Give the worker time to finish an in-flight email on stop (matches WORKER_SHUTDOWN_GRACE_SECONDS + margin).
 TimeoutStopSec=40
 KillSignal=SIGTERM

@@ -51,20 +51,31 @@ apt-get install -y -qq --no-install-recommends \
   debian-keyring debian-archive-keyring apt-transport-https unattended-upgrades
 
 log "Installing Caddy from the official repository"
-if [[ ! -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg ]]; then
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-    | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+CADDY_KEYRING=/usr/share/keyrings/caddy-stable-archive-keyring.gpg
+CADDY_LIST=/etc/apt/sources.list.d/caddy-stable.list
+# Download to temporary files, check them, then move them into place, so an interrupted download
+# never leaves an empty key or list behind that a re-run would trust.
+if [[ ! -s "$CADDY_KEYRING" ]] || ! gpg --show-keys "$CADDY_KEYRING" >/dev/null 2>&1; then
+  tmp_key=$(mktemp)
+  curl -1sSLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor > "$tmp_key"
+  gpg --show-keys "$tmp_key" >/dev/null
+  install -m 644 "$tmp_key" "$CADDY_KEYRING"
+  rm -f "$tmp_key"
 fi
-if [[ ! -f /etc/apt/sources.list.d/caddy-stable.list ]]; then
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-    > /etc/apt/sources.list.d/caddy-stable.list
-  chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg /etc/apt/sources.list.d/caddy-stable.list
-  apt-get update -qq
+if [[ ! -s "$CADDY_LIST" ]] || ! grep -q 'dl.cloudsmith.io' "$CADDY_LIST"; then
+  tmp_list=$(mktemp)
+  curl -1sSLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > "$tmp_list"
+  grep -q 'dl.cloudsmith.io' "$tmp_list"
+  install -m 644 "$tmp_list" "$CADDY_LIST"
+  rm -f "$tmp_list"
 fi
+apt-get update -qq
 apt-get install -y -qq caddy
 # Debian's own archive ships a years-old Caddy; make sure the package came from the Caddy repository.
-if ! apt-cache policy caddy | grep -q 'dl.cloudsmith.io'; then
-  echo "caddy was not installed from dl.cloudsmith.io; check /etc/apt/sources.list.d/caddy-stable.list" >&2
+# (The output is captured first: piping apt-cache into grep -q fails under pipefail via SIGPIPE.)
+caddy_policy=$(apt-cache policy caddy)
+if [[ "$caddy_policy" != *dl.cloudsmith.io* ]]; then
+  echo "caddy was not installed from dl.cloudsmith.io; check $CADDY_LIST" >&2
   exit 1
 fi
 echo "caddy $(caddy version)"
@@ -177,9 +188,11 @@ Unattended-Upgrade::Origins-Pattern {
 EOF
 
 log "Checking configuration"
-if grep -q 'CHANGE_ME' "$ENV_FILE"; then
-  echo "The env file still contains CHANGE_ME placeholders: $ENV_FILE"
-  echo "Edit it, then run:  systemctl restart whatsapp-webhook && journalctl -u whatsapp-webhook -f"
+# only real assignments count, e.g. MAIL_TO=CHANGE_ME or MAIL_TO="CHANGE_ME"; comments are ignored
+placeholders=$(grep -E '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=["'"'"']?CHANGE_ME' "$ENV_FILE" | cut -d= -f1 | tr '\n' ' ' || true)
+if [[ -n "$placeholders" ]]; then
+  echo "These settings in $ENV_FILE still hold CHANGE_ME: $placeholders"
+  echo "Edit it, then run:  sudo systemctl restart whatsapp-webhook && journalctl -u whatsapp-webhook -f"
 else
   if /usr/local/bin/whatsapp-webhook check-config >/dev/null; then
     systemctl restart whatsapp-webhook

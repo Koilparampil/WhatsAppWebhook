@@ -99,9 +99,9 @@ New-ServicePrincipal -AppId <Application (client) ID> -ObjectId <Enterprise app 
 
 New-ManagementScope -Name "WhatsApp relay sender" -RecipientRestrictionFilter "UserPrincipalName -eq 'whatsapp@vship2000.com'"
 
-# "Application Mail Full Access" = Mail.ReadWrite + Mail.Send; needed because attachments of 3 MB or
-# more are sent through a draft message and an upload session. "Application Mail.Send" alone is
-# enough only if media will never exceed 3 MB.
+# "Application Mail Full Access" = Mail.ReadWrite + Mail.Send. It is needed because any email whose
+# attachment is larger than about 1.9 MB is sent as a draft (plus an upload session from 3 MB).
+# "Application Mail.Send" alone would only work if every attachment stayed under about 1.9 MB.
 New-ManagementRoleAssignment -App <Enterprise app Object ID> -Role "Application Mail Full Access" -CustomResourceScope "WhatsApp relay sender"
 
 # Verify (bypasses the cache): InScope must be True for the relay mailbox and False for any other mailbox
@@ -174,13 +174,16 @@ MAIL_TO=<internal recipient(s)>
 Only outbound HTTPS to `login.microsoftonline.com`, `graph.microsoft.com` and `outlook.office.com`
 (upload sessions) is needed. Test with `whatsapp-webhook test-email`. Throttling to respect: 30
 messages per minute and 10,000 recipients per day per mailbox; 150 MB uploaded per 5 minutes per
-app and mailbox. The worker sends one email at a time and backs off on HTTP 429.
+app and mailbox. The worker sends one email at a time; when Graph answers HTTP 429 it waits as long as
+the `Retry-After` header asks and sends nothing else in the meantime.
 
-Two Graph-specific behaviours to know: emails whose attachment is 3 MB or larger go through a draft
-message plus an upload session, and Exchange then assigns its own `Message-ID`, so the forwarder's
-deterministic ids and the `In-Reply-To` threading of quoted replies apply only to smaller emails on
-this transport (they always apply on SMTP). Graph also keeps a copy of every sent email in the relay
-mailbox's Sent Items (section 2e).
+Two Graph-specific behaviours to know. First, an email whose attachment is larger than about 1.9 MB
+(so that the whole message exceeds 3.5 MB once base64-encoded) is sent as a draft: the attachment is
+added inline up to 3 MB and through an upload session above that. Exchange then assigns its own
+`Message-ID` and Graph accepts at most five custom `X-WhatsApp-*` headers, so the forwarder's
+deterministic ids, the `In-Reply-To` threading of quoted replies and the `X-WhatsApp-BSUID` header
+apply only to smaller emails on this transport (they always apply on SMTP). Second, Graph keeps a
+copy of every sent email in the relay mailbox's Sent Items (section 2e).
 
 Three more operational notes:
 

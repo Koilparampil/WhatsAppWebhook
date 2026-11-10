@@ -1,0 +1,6 @@
+# Shell scripts, unit files and config must keep LF line endings even on a Windows checkout,
+# otherwise bash fails at "set -euo pipefail" and the files shipped to the VM break.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.pdf binary

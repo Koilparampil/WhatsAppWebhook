@@ -256,6 +256,9 @@ def _crm_lines(lookup: LookupResult) -> list[str]:
     elif lookup.status is LookupStatus.NO_MATCH:
         out.append(f"No match: {lookup.reason} (searched: {searched}).")
         out.append("Replies to this email will NOT reach the sender.")
+    elif lookup.status is LookupStatus.NO_EMAIL:
+        out.append(f"Customer found, but no Reply-To possible: {lookup.reason}.")
+        out.append("Replies to this email will NOT reach the sender.")
     elif lookup.status is LookupStatus.ERROR:
         out.append(f"Lookup failed: {lookup.reason}")
         out.append("Replies to this email will NOT reach the sender.")
@@ -608,4 +611,20 @@ def build_alert_email(subject: str, body: str, settings: Settings) -> EmailMessa
     message["Date"] = formatdate(localtime=False)
     message["X-WhatsApp-Alert"] = "dead-letter"
     message.set_content(body)
+    return message
+
+
+def build_test_email(settings: Settings, transport_name: str, sent_at: str) -> EmailMessage:
+    """Operator test message (``whatsapp-webhook test-email``); deliberately not shaped like an alert."""
+    message = EmailMessage(policy=SMTP)
+    message["From"] = formataddr(("WhatsApp email forwarder", settings.mail_from))
+    message["To"] = ", ".join(settings.mail_to_list)
+    message["Subject"] = _clean_header_text(f"{settings.mail_subject_prefix} Test email from the forwarder")
+    message["Date"] = formatdate(localtime=False)
+    message["X-WhatsApp-Test"] = "1"
+    message.set_content(
+        "This is a test message from the WhatsApp email forwarder.\n"
+        f"Sent at {sent_at} through the '{transport_name}' transport.\n"
+        "If it arrived, the server can deliver mail to this mailbox.\n"
+    )
     return message

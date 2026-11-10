@@ -161,6 +161,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             worker.wakeup.set()
         if parsed.object_type != "whatsapp_business_account":
             log.info("ignored webhook for object %r", parsed.object_type)
+        if parsed.skipped_messages:
+            log.info(
+                "skipped %d message(s) addressed to other business numbers %s (WA_PHONE_NUMBER_ID=%s)",
+                parsed.skipped_messages,
+                sorted(parsed.skipped_phone_number_ids),
+                settings.wa_phone_number_id,
+            )
         log.info(
             "webhook: %d message(s) queued, %d duplicate(s), %d status update(s), other fields=%s",
             accepted,

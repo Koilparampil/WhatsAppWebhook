@@ -16,7 +16,7 @@ import ssl
 import time
 from collections.abc import Callable, Iterator
 from email.message import EmailMessage
-from email.utils import getaddresses
+from email.utils import getaddresses, parsedate_to_datetime
 from typing import Protocol
 
 import httpx
@@ -59,10 +59,43 @@ def iter_b64_blocks(text: str, block_chars: int = B64_DECODE_BLOCK_CHARS) -> Ite
 
 
 class SendError(Exception):
-    def __init__(self, message: str, *, retriable: bool = True, status_code: int | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        retriable: bool = True,
+        status_code: int | None = None,
+        retry_after: float | None = None,
+    ):
         super().__init__(message)
         self.retriable = retriable
         self.status_code = status_code
+        self.retry_after = retry_after  # seconds the server asked us to wait (HTTP 429/503)
+
+
+class SendAuthError(SendError):
+    """The mail server or Graph rejected our credentials or token."""
+
+
+MAX_RETRY_AFTER_SECONDS = 3600.0
+
+
+def parse_retry_after(value: str | None, now: float | None = None) -> float | None:
+    """Retry-After as seconds: delta-seconds or an HTTP-date (RFC 9110); None when absent/invalid."""
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(value)
+        except (TypeError, ValueError, IndexError):
+            return None
+        if when is None:
+            return None
+        seconds = when.timestamp() - (time.time() if now is None else now)
+    return max(0.0, min(seconds, MAX_RETRY_AFTER_SECONDS))
 
 
 class Transport(Protocol):
@@ -112,6 +145,8 @@ class OAuthTokenProvider:
                     retriable=resp.status_code >= 500
                     or resp.status_code == 429
                     or resp.status_code in (400, 401),
+                    status_code=resp.status_code,
+                    retry_after=parse_retry_after(resp.headers.get("Retry-After")),
                 )
             body = resp.json()
             token = body.get("access_token")
@@ -120,6 +155,10 @@ class OAuthTokenProvider:
             expires_in = float(body.get("expires_in", 3600))
             self._tokens[scope] = (token, self._clock() + expires_in)
             return token
+
+    def invalidate(self, scope: str) -> None:
+        """Forget a token the server rejected so the next call fetches a fresh one."""
+        self._tokens.pop(scope, None)
 
 
 # ----------------------------------------------------------------------------- SMTP
@@ -136,7 +175,12 @@ class SmtpTransport:
             if self._oauth is None:
                 raise SendError("SMTP_AUTH=oauth requires OAuth settings", retriable=False)
             token = await self._oauth.get_token(OUTLOOK_SMTP_SCOPE)
-        return await asyncio.to_thread(self._send_sync, message, token)
+        try:
+            return await asyncio.to_thread(self._send_sync, message, token)
+        except SendAuthError:
+            if self._oauth is not None:
+                self._oauth.invalidate(OUTLOOK_SMTP_SCOPE)  # the next attempt gets a fresh token
+            raise
 
     def _send_sync(self, message: EmailMessage, token: str | None) -> str:
         s = self._s
@@ -163,7 +207,7 @@ class SmtpTransport:
                     smtp.auth("XOAUTH2", lambda _challenge=None: auth_string, initial_response_ok=True)
                 refused = smtp.send_message(message, from_addr=s.mail_from, to_addrs=recipients)
         except smtplib.SMTPAuthenticationError as exc:
-            raise SendError(f"SMTP authentication failed: {exc}", retriable=True) from exc
+            raise SendAuthError(f"SMTP authentication failed: {exc}", retriable=True) from exc
         except smtplib.SMTPRecipientsRefused as exc:
             raise SendError(
                 f"SMTP refused every recipient: {exc.recipients}", retriable=_any_transient(exc.recipients)
@@ -211,6 +255,17 @@ class GraphTransport:
         return f"{self._s.graph_base_url.rstrip('/')}/users/{self._s.graph_sender}{path}"
 
     async def send(self, message: EmailMessage) -> str:
+        try:
+            return await self._send_once(message)
+        except SendError as exc:
+            if exc.status_code != 401:
+                raise
+            # a cached token Graph no longer accepts (e.g. permissions changed): retry once fresh
+            log.warning("Graph rejected the access token (401); retrying once with a new token")
+            self._oauth.invalidate(GRAPH_SCOPE)
+            return await self._send_once(message)
+
+    async def _send_once(self, message: EmailMessage) -> str:
         # The attachments' base64 text alone tells whether the MIME route can fit; when it cannot,
         # skip flattening the whole message (a full extra copy of up to MAIL_MAX_MESSAGE_BYTES).
         attachment_text = sum(len(part.get_payload()) for part in message.iter_attachments())
@@ -246,11 +301,7 @@ class GraphTransport:
             {"emailAddress": {"address": a}} for _, a in getaddresses(message.get_all("Reply-To", [])) if a
         ]
         to = [{"emailAddress": {"address": a}} for _, a in getaddresses(message.get_all("To", [])) if a]
-        custom_headers = [
-            {"name": k, "value": str(v)}
-            for k, v in message.items()
-            if k.lower().startswith("x-") and len(str(v)) < 1000
-        ]
+        custom_headers = graph_custom_headers(message)
         payload = {
             "subject": str(message["Subject"] or ""),
             "body": {"contentType": content_type, "content": content},
@@ -264,6 +315,17 @@ class GraphTransport:
             headers={**headers, "Content-Type": "application/json"},
             json=payload,
         )
+        if resp.status_code == 400 and "InternetMessageHeader" in resp.text:
+            log.warning(
+                "Graph refused the custom headers (%s); creating the draft without them", resp.text[:200]
+            )
+            payload.pop("internetMessageHeaders")
+            resp = await self._request(
+                "POST",
+                self._url("/messages"),
+                headers={**headers, "Content-Type": "application/json"},
+                json=payload,
+            )
         if resp.status_code not in (200, 201):
             self._raise_for(resp, "create draft")
         draft_id = resp.json().get("id")
@@ -418,7 +480,34 @@ class GraphTransport:
             f"Graph {step} returned HTTP {resp.status_code}: {resp.text[:300]}",
             retriable=retriable,
             status_code=resp.status_code,
+            retry_after=parse_retry_after(resp.headers.get("Retry-After")),
         )
+
+
+# Graph accepts at most 5 entries in internetMessageHeaders ("InvalidInternetMessageHeaderCollection");
+# keep the ones most useful for mail rules first.
+GRAPH_MAX_CUSTOM_HEADERS = 5
+_HEADER_PRIORITY = (
+    "x-whatsapp-message-id",
+    "x-whatsapp-from",
+    "x-whatsapp-crm-match",
+    "x-whatsapp-part",
+    "x-whatsapp-type",
+    "x-whatsapp-bsuid",
+)
+
+
+def graph_custom_headers(message: EmailMessage) -> list[dict[str, str]]:
+    candidates = [
+        (k, str(v)) for k, v in message.items() if k.lower().startswith("x-") and len(str(v)) < 1000
+    ]
+
+    def rank(item: tuple[str, str]) -> int:
+        name = item[0].lower()
+        return _HEADER_PRIORITY.index(name) if name in _HEADER_PRIORITY else len(_HEADER_PRIORITY)
+
+    chosen = sorted(candidates, key=rank)[:GRAPH_MAX_CUSTOM_HEADERS]
+    return [{"name": k, "value": v} for k, v in chosen]
 
 
 def build_transport(settings: Settings, http: httpx.AsyncClient) -> Transport:

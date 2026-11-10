@@ -9,18 +9,25 @@ import os
 import sys
 import time
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import httpx
+from pydantic import ValidationError
 
 from app.config import load_settings
-from app.mail.compose import build_alert_email
+from app.mail.compose import build_test_email
 from app.mail.transports import build_transport
 from app.main import build_directory, configure_logging
 from app.store import STATUS_FAILED, STATUS_PENDING, Store
 
+EX_CONFIG = 78  # sysexits.h: configuration error; systemd does not restart on it (RestartPreventExitStatus)
 
-def _fmt_ts(ts: float | None) -> str:
-    return datetime.fromtimestamp(ts, tz=UTC).isoformat(timespec="seconds") if ts else "-"
+
+def _fmt_ts(ts: float | None, tz_name: str = "UTC") -> str:
+    """Operator-facing time in the configured timezone (MAIL_TIMEZONE, New York for this project)."""
+    if not ts:
+        return "-"
+    return datetime.fromtimestamp(ts, tz=UTC).astimezone(ZoneInfo(tz_name)).isoformat(timespec="seconds")
 
 
 async def cmd_check_config(args: argparse.Namespace) -> int:
@@ -67,13 +74,7 @@ async def cmd_test_email(args: argparse.Namespace) -> int:
     settings = load_settings()
     async with httpx.AsyncClient(timeout=120) as http:
         transport = build_transport(settings, http)
-        message = build_alert_email(
-            "test email",
-            "This is a test message from the WhatsApp email forwarder.\n"
-            f"Sent at {datetime.now(tz=UTC).isoformat(timespec='seconds')}"
-            f" via transport '{transport.name}'.\n",
-            settings,
-        )
+        message = build_test_email(settings, transport.name, _fmt_ts(time.time(), settings.mail_timezone))
         if args.to:
             del message["To"]
             message["To"] = args.to
@@ -90,7 +91,10 @@ def cmd_list_failed(args: argparse.Namespace) -> int:
         print("no failed items")
         return 0
     for item in items:
-        print(f"{item.key}  kind={item.kind} attempts={item.attempts} finished={_fmt_ts(item.finished_at)}")
+        print(
+            f"{item.key}  kind={item.kind} attempts={item.attempts}"
+            f" finished={_fmt_ts(item.finished_at, settings.mail_timezone)}"
+        )
         print(f"    error: {(item.last_error or '').splitlines()[0][:200]}")
     return 0
 
@@ -110,7 +114,8 @@ def cmd_stats(args: argparse.Namespace) -> int:
     pending = store.list_by_status(STATUS_PENDING, limit=5)
     for item in pending:
         print(
-            f"pending: {item.key} attempts={item.attempts} next={_fmt_ts(item.next_attempt_at)}"
+            f"pending: {item.key} attempts={item.attempts}"
+            f" next={_fmt_ts(item.next_attempt_at, settings.mail_timezone)}"
             f" error={item.last_error!r}"
         )
     return 0
@@ -145,7 +150,8 @@ async def cmd_meta_check(args: argparse.Namespace) -> int:
             scopes = info.get("scopes") or []
             expires = info.get("expires_at")
             print(f"token: type={info.get('type')} valid={info.get('is_valid')} app_id={info.get('app_id')}")
-            print(f"       expires_at={'never' if expires in (0, None) else _fmt_ts(float(expires))}")
+            expiry = "never" if expires in (0, None) else _fmt_ts(float(expires), settings.mail_timezone)
+            print(f"       expires_at={expiry}")
             print(f"       scopes={scopes}")
             for needed in ("whatsapp_business_messaging", "whatsapp_business_management"):
                 if needed not in scopes:
@@ -172,6 +178,7 @@ async def cmd_meta_check(args: argparse.Namespace) -> int:
                         f" verification={details.get('code_verification_status')}"
                         f" quality={n.get('quality_rating')}"
                     )
+                    rc = max(rc, _report_webhook_routing(str(n.get("id")), details))
                 apps = await admin.subscribed_apps(http, waba_id=settings.wa_waba_id, **common)
                 if not apps:
                     print("subscribed apps: NONE - run `whatsapp-webhook meta-subscribe`")
@@ -179,20 +186,45 @@ async def cmd_meta_check(args: argparse.Namespace) -> int:
                 for a in apps:
                     app_info = a.get("whatsapp_business_api_data", a)
                     print(f"subscribed app: {app_info}")
+                    if a.get("override_callback_uri"):
+                        print(
+                            f"  WABA-level callback override: {a['override_callback_uri']}"
+                            " - messages go there instead of this service. Remove it with"
+                            " `whatsapp-webhook meta-subscribe` (subscribing without a body clears it)."
+                        )
+                        rc = max(rc, 2)
             except admin.GraphAdminError as exc:
                 print(f"waba: {exc}")
                 rc = 2
         else:
             print("WA_WABA_ID not set: skipping phone number and subscription checks")
-        if settings.wa_phone_number_id:
+        if settings.wa_phone_number_id and not settings.wa_waba_id:
             try:
                 cfg = await admin.phone_number_details(
                     http, phone_number_id=settings.wa_phone_number_id, **common
                 )
-                override = (cfg.get("webhook_configuration") or {}).get("application")
-                print(f"phone {settings.wa_phone_number_id}: webhook override={override or 'none'}")
+                rc = max(rc, _report_webhook_routing(settings.wa_phone_number_id, cfg))
             except admin.GraphAdminError as exc:
                 print(f"phone: {exc}")
+    return rc
+
+
+def _report_webhook_routing(phone_number_id: str, details: dict) -> int:
+    """Explain where Meta sends this number's messages: phone override > WABA override > app URL."""
+    cfg = details.get("webhook_configuration") or {}
+    app_url = cfg.get("application")
+    print(f"  webhooks for {phone_number_id}: app callback={app_url or '?'}")
+    rc = 0
+    if cfg.get("phone_number"):
+        print(
+            f"  PHONE-level callback override: {cfg['phone_number']} - messages for this number go there."
+            f" Remove it with POST /{phone_number_id} and body"
+            ' {"webhook_configuration": {"override_callback_uri": ""}}'
+        )
+        rc = 2
+    if cfg.get("whatsapp_business_account"):
+        print(f"  WABA-level callback override: {cfg['whatsapp_business_account']}")
+        rc = 2
     return rc
 
 
@@ -280,9 +312,13 @@ def main(argv: list[str] | None = None) -> int:
         "run": cmd_run,
     }
     handler = handlers[args.command]
-    result = handler(args)
-    if asyncio.iscoroutine(result):
-        result = asyncio.run(result)
+    try:
+        result = handler(args)
+        if asyncio.iscoroutine(result):
+            result = asyncio.run(result)
+    except ValidationError as exc:
+        print(f"configuration error in the environment / env file:\n{exc}", file=sys.stderr)
+        return EX_CONFIG
     return int(result)
 
 

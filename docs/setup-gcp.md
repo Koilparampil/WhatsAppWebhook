@@ -109,7 +109,7 @@ no SSH port is open to the internet; `gcloud` defaults to `debian-12`, so the sc
 
 | Item | Free Tier | Expected charge |
 |---|---|---|
-| e2-micro, 24x7 | 1 instance-month in us-west1/us-east1/us-east1 | 0 |
+| e2-micro, 24x7 | 1 instance-month in us-west1/us-central1/us-east1 | 0 |
 | 30 GB standard persistent disk | 30 GB-months | 0 |
 | Egress from North America | 1 GB/month (Premium tier) | 0 at this traffic level |
 | External IPv4 in use | 1 hour/month only | about USD 3.65/month |

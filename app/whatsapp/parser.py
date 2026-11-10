@@ -182,6 +182,7 @@ class ParsedWebhook:
     messages: list[InboundMessage] = field(default_factory=list)
     statuses: int = 0
     skipped_messages: int = 0
+    skipped_phone_number_ids: set[str] = field(default_factory=set)
     other_fields: list[str] = field(default_factory=list)
     value_errors: list[MessageError] = field(default_factory=list)
     object_type: str | None = None
@@ -391,6 +392,7 @@ def parse_webhook(payload: Any, phone_number_id_filter: str | None = None) -> Pa
             metadata = value.get("metadata") if isinstance(value.get("metadata"), dict) else {}
             if phone_number_id_filter and _str(metadata.get("phone_number_id")) != phone_number_id_filter:
                 result.skipped_messages += len(value.get("messages") or [])
+                result.skipped_phone_number_ids.add(_str(metadata.get("phone_number_id")) or "?")
                 continue
             result.statuses += len(value.get("statuses") or [])
             result.value_errors.extend(_parse_error(e) for e in (value.get("errors") or []))

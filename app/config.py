@@ -88,7 +88,7 @@ class Settings(BaseSettings):
     mail_from_name_template: str = "{display_name} via WhatsApp"
     mail_to: str = Field(description="Comma-separated recipient list.")
     mail_subject_prefix: str = "[WhatsApp]"
-    mail_timezone: str = "UTC"
+    mail_timezone: str = "America/New_York"
     mail_fallback_reply_to: str = ""
     mail_max_message_bytes: int = Field(
         default=32_000_000,

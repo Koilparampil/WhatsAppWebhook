@@ -76,7 +76,8 @@ rather than a one-time token.
 | Phone number id | API Setup panel, or `whatsapp-webhook meta-check` | `WA_PHONE_NUMBER_ID` (optional filter) |
 | Graph API version | current: `v27.0` (released 4 Nov 2026; each version is supported for at least two years) | `WA_GRAPH_API_VERSION` |
 
-Store them only in `/etc/whatsapp-webhook/env` on the VM (root-only, mode 640). Never commit them.
+Store them only in `/etc/whatsapp-webhook/env` on the VM (owner root, group whwebhook, mode 640:
+readable by root and the service user only). Never commit them.
 
 ## 4. Configure the webhook
 
@@ -88,7 +89,9 @@ Store them only in `/etc/whatsapp-webhook/env` on the VM (root-only, mode 640). 
    check `journalctl -u caddy` and `journalctl -u whatsapp-webhook` on the VM.
 3. In the fields list, **Subscribe** to **messages**. Leave other fields unsubscribed (the service
    ignores them). Click **Test** on the messages row; the service should log one queued message
-   (the test payload uses a sample sender) and then email it.
+   (the test payload uses a sample sender) and then email it. Leave `WA_PHONE_NUMBER_ID` empty for
+   this test: the sample may carry a placeholder phone number id, and with the filter set the
+   service skips it (the log then says "skipped 1 message(s) addressed to other business numbers").
 4. Make sure the app is subscribed on the production Messaging account and that no callback override
    exists: on the VM run `whatsapp-webhook meta-check`. If it reports no subscribed app, run
    `whatsapp-webhook meta-subscribe` (equivalent to `POST /<WABA_ID>/subscribed_apps`).

@@ -84,6 +84,7 @@ class Worker:
         self.last_loop_error_at: float | None = None
         self.error_pause_seconds = 2.0  # doubled per consecutive loop error, capped at 60 s
         self.outcome_write_delays: tuple[float, ...] = OUTCOME_WRITE_DELAYS
+        self.paused_until: float | None = None  # set when the mail service throttles us (Retry-After)
         self._current: str | None = None
 
     # ------------------------------------------------------------------ loop
@@ -96,6 +97,17 @@ class Worker:
         consecutive = 0
         while not stop.is_set():
             try:
+                if self.paused_until is not None and self.paused_until > self.clock():
+                    # the mail service asked us to wait: send nothing at all until then
+                    wait = self.paused_until - self.clock()
+                    try:
+                        await asyncio.wait_for(
+                            stop.wait(), timeout=min(wait, self.settings.worker_poll_seconds)
+                        )
+                    except TimeoutError:
+                        pass
+                    continue
+                self.paused_until = None
                 item = self.store.claim_next(self.clock())
                 if item is None:
                     await self._sleep_until_due(stop)
@@ -228,7 +240,13 @@ class Worker:
                 decision = ("dead", f"permanent: {exc}")
             except (MediaDownloadError, SendError) as exc:
                 if getattr(exc, "retriable", True):
-                    decision = ("retry", str(exc))
+                    retry_after = getattr(exc, "retry_after", None)
+                    if retry_after:
+                        self.paused_until = max(self.paused_until or 0.0, self.clock() + retry_after)
+                        log.warning(
+                            "mail service asked to wait %.0fs (Retry-After); pausing sends", retry_after
+                        )
+                    decision = ("retry", (str(exc), retry_after))
                 else:
                     decision = ("dead", f"not retriable: {exc}")
             except ComposeError as exc:
@@ -259,7 +277,11 @@ class Worker:
                         self.clock() - started,
                     )
                 elif kind == "retry":
-                    self._schedule_retry(item, str(value))
+                    if isinstance(value, tuple):
+                        error, min_delay = value
+                        self._schedule_retry(item, str(error), min_delay=min_delay)
+                    else:
+                        self._schedule_retry(item, str(value))
                 else:
                     self._dead_letter(item, str(value))
                 return
@@ -271,10 +293,10 @@ class Worker:
                 )
                 await asyncio.sleep(delay)
 
-    def _schedule_retry(self, item: QueueItem, error: str) -> None:
+    def _schedule_retry(self, item: QueueItem, error: str, min_delay: float | None = None) -> None:
         now = self.clock()
         first = item.first_attempt_at or now
-        delay = self._backoff(item.attempts)
+        delay = max(self._backoff(item.attempts), min_delay or 0.0)
         next_at = now + delay
         window = (
             self.settings.alert_retry_window_seconds
@@ -403,6 +425,7 @@ class Worker:
             "last_error": self.last_error,
             "loop_errors": self.loop_errors,
             "last_loop_error_at": self.last_loop_error_at,
+            "paused_until": self.paused_until,
         }
 
 

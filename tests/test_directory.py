@@ -97,8 +97,9 @@ async def test_inactive_excluded_and_no_email(clock):
     directory = make_directory(FakeClient({"Customer": CUSTOMERS}), clock)
     assert (await directory.lookup("16505557777")).status is LookupStatus.NO_MATCH
     no_email = await directory.lookup("16505558888")
-    assert no_email.status is LookupStatus.NO_MATCH
+    assert no_email.status is LookupStatus.NO_EMAIL
     assert "no email" in no_email.reason
+    assert no_email.best.record.record_id == "5"
     incl = make_directory(FakeClient({"Customer": CUSTOMERS}), clock, include_inactive=True)
     assert (await incl.lookup("16505557777")).status is LookupStatus.MATCHED
 
