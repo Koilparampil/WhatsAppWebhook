@@ -48,6 +48,14 @@ class Settings(BaseSettings):
         default=False, description="DEV ONLY: accept POSTs without a valid signature."
     )
     wa_media_timeout_seconds: float = 120.0
+    # One-time /onboard page for WhatsApp Business app (Coexistence) onboarding; off unless all three set.
+    wa_app_id: str = Field(default="", description="Meta App ID (App settings > Basic), used by /onboard.")
+    onboard_config_id: str = Field(
+        default="", description="Facebook Login for Business configuration id (WhatsApp Embedded Signup)."
+    )
+    onboard_key: str = Field(
+        default="", description="Secret that /onboard?key= must match; empty disables the page."
+    )
 
     # ------------------------------------------------------------------ VShipCRM
     crm_enabled: bool = True
@@ -142,6 +150,10 @@ class Settings(BaseSettings):
         return self.mail_from.rsplit("@", 1)[-1].strip().lower() or "localhost"
 
     @property
+    def onboard_enabled(self) -> bool:
+        return bool(self.wa_app_id and self.onboard_config_id and self.onboard_key)
+
+    @property
     def oauth_token_url(self) -> str:
         return self.oauth_token_url_template.format(tenant=self.oauth_tenant_id)
 
@@ -153,10 +165,19 @@ class Settings(BaseSettings):
             value = "v" + value
         return value
 
+    @field_validator("wa_app_id", "onboard_config_id")
+    @classmethod
+    def _numeric_id(cls, value: str, info) -> str:
+        value = (value or "").strip()
+        if value and not value.isdigit():
+            raise ValueError(f"{info.field_name.upper()} must be the numeric id from the App Dashboard")
+        return value
+
     @field_validator(
         "wa_verify_token",
         "wa_app_secret",
         "wa_access_token",
+        "onboard_key",
         "crm_password",
         "smtp_password",
         "oauth_client_secret",
@@ -169,7 +190,7 @@ class Settings(BaseSettings):
             value.startswith("<") and value.endswith(">")
         ):
             raise ValueError(f"{info.field_name.upper()} still holds a placeholder value")
-        if info.field_name in {"wa_verify_token", "wa_app_secret"} and 0 < len(value) < 16:
+        if info.field_name in {"wa_verify_token", "wa_app_secret", "onboard_key"} and 0 < len(value) < 16:
             raise ValueError(f"{info.field_name.upper()} must be at least 16 characters")
         return value
 
@@ -237,6 +258,7 @@ class Settings(BaseSettings):
             "wa_verify_token",
             "wa_app_secret",
             "wa_access_token",
+            "onboard_key",
             "crm_password",
             "smtp_password",
             "oauth_client_secret",

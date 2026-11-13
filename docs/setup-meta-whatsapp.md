@@ -109,6 +109,43 @@ tools > Phone numbers and in `whatsapp-webhook meta-check` (status `CONNECTED`).
 image and a PDF from a personal phone to the business number and confirm one email per message
 arrives (the PDF path exercises the media download and, for large files, the splitting logic).
 
+### 5a. If the number lives in the WhatsApp Business app (Coexistence)
+
+Symptoms: the number shows **Offline** in WhatsApp Manager, and `POST /<PHONE_NUMBER_ID>/register`
+fails with `Register endpoint is not available for SMB businesses`. The number belongs to the
+WhatsApp Business app on a phone, and it can only be connected to Cloud API (while keeping the app)
+through Embedded Signup in Coexistence mode. The service ships a one-time page for that at
+`/onboard`, disabled unless configured.
+
+1. **App Dashboard > App settings > Basic**: copy the **App ID**. Under **App domains** add the
+   webhook hostname (`whatsapphook.vship2000.com`).
+2. **Facebook Login for Business > Settings**: switch on **Client OAuth login**, **Web OAuth login**
+   and **Login with the JavaScript SDK**; add `https://whatsapphook.vship2000.com/` to **Allowed
+   domains for the JavaScript SDK**. Save.
+3. **Facebook Login for Business > Configurations > Create from template** > *WhatsApp Embedded
+   Signup Configuration With 60 Expiration Token*. The plain **Create configuration** wizard often
+   offers only the *General* variation; the template sets the *WhatsApp Embedded Signup* variation,
+   which the read-only configuration view confirms (the edit wizard may still show *General*; do not
+   save from it). Copy the **Configuration ID**.
+4. In `/etc/whatsapp-webhook/env` set `WA_APP_ID`, `ONBOARD_CONFIG_ID` and `ONBOARD_KEY`
+   (`openssl rand -hex 16`), then `sudo systemctl restart whatsapp-webhook`. Deploy first if the VM
+   predates this feature: the Caddyfile must route `/onboard`.
+5. With the phone at hand (WhatsApp Business app updated and online), open
+   `https://whatsapphook.vship2000.com/onboard?key=<ONBOARD_KEY>` in a desktop browser, click
+   **Connect WhatsApp Business app**, log in with a Facebook account that is an admin of the business
+   portfolio and has a role on the Meta app, enter the business number and confirm in the app. The
+   page shows Meta's result, including the `waba_id`. Chat-history sharing is not needed.
+6. On the VM: `whatsapp-webhook meta-check`. If the Messaging account or phone number id changed,
+   update `WA_WABA_ID` / `WA_PHONE_NUMBER_ID`, and assign the account to the System User (section 2,
+   step 4) if the token cannot see it. Run `whatsapp-webhook meta-subscribe`, confirm `CONNECTED`,
+   then do the text / image / PDF test above.
+7. Clear `ONBOARD_KEY` in the env file and restart; `/onboard` then answers 404.
+
+Keep the link alive: open the WhatsApp Business app on the primary phone **at least every 13 days**;
+after about 14 days of inactivity Meta disconnects the number from Cloud API and the onboarding has
+to be repeated. Messages typed in the app on the phone arrive as `smb_message_echoes` webhooks and
+history syncs as `history`; the service ignores both and forwards only incoming customer messages.
+
 ### Limits and optional hardening
 
 - At Standard access an app can have **one Employee and one Admin system user**. If the portfolio's

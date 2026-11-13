@@ -19,12 +19,21 @@ __DOMAIN__ {
 			wrap json
 			request>uri query {
 				delete hub.verify_token
+				delete key
 			}
 		}
 	}
 
 	# Only the webhook path reaches the application.
 	handle /webhook {
+		reverse_proxy 127.0.0.1:8000 {
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# One-time WhatsApp Business app (Coexistence) onboarding page; the app answers 404 unless
+	# ONBOARD_* is configured and ?key= matches.
+	handle /onboard {
 		reverse_proxy 127.0.0.1:8000 {
 			header_up X-Real-IP {remote_host}
 		}

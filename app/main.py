@@ -11,12 +11,13 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from app.config import Settings, load_settings
 from app.crm.client import VShipClient
 from app.crm.directory import Directory
 from app.mail.transports import build_transport
+from app.onboard import ONBOARD_HEADERS, render_onboard_page
 from app.security import SIGNATURE_HEADER, verify_signature, verify_token_matches
 from app.store import KIND_MESSAGE, Store
 from app.whatsapp.parser import parse_webhook
@@ -176,6 +177,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             sorted(set(parsed.other_fields)),
         )
         return JSONResponse({"status": "ok", "queued": accepted, "duplicates": duplicates})
+
+    @app.get("/onboard")
+    async def onboard(request: Request) -> Response:
+        # Same bare 404 whether the page is disabled or the key is wrong, so the path reveals nothing.
+        if not settings.onboard_enabled or not verify_token_matches(
+            settings.onboard_key, request.query_params.get("key")
+        ):
+            return PlainTextResponse("not found", status_code=404)
+        log.info("served the WhatsApp Business app onboarding page")
+        page = render_onboard_page(
+            settings.wa_app_id, settings.onboard_config_id, settings.wa_graph_api_version
+        )
+        return HTMLResponse(page, headers=ONBOARD_HEADERS)
 
     @app.get("/healthz")
     async def healthz(request: Request) -> Response:
