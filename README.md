@@ -78,6 +78,8 @@ values (secrets need at least 16 characters).
   (Meta retries) are ignored by message id. Delivery receipts (`statuses`) are not forwarded.
 - Every inbound type is forwarded: text, image, video, audio/voice, document, sticker, location,
   contact cards, interactive replies, buttons, reactions, orders, system notices and unsupported types.
+  For a message WhatsApp can't pass on (an edit, a poll, a file over 100 MB, ...), the email says in plain
+  English what the sender did and asks staff to have it sent again.
 - Phone numbers can be absent (WhatsApp usernames / business-scoped user ids). The parser treats the
   phone as optional; without one the CRM lookup is skipped and the display name is used.
 - CRM lookup: the Customer list is downloaded and indexed in memory (E.164 and last-10-digit keys),

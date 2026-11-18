@@ -91,6 +91,18 @@ def test_mixed_batch_and_other_fields():
     unsupported = by_type["unsupported"]
     assert unsupported.errors[0].code == 131051
     assert "not supported" in unsupported.errors[0].describe()
+    assert unsupported.unsupported_type is None
+    assert unsupported.summary() == "sent a message WhatsApp can't pass on"
+
+
+def test_unsupported_label_is_parsed_and_matched_case_insensitively():
+    payload = load_payload("mixed")
+    for message in payload["entry"][0]["changes"][0]["value"]["messages"]:
+        if message["type"] == "unsupported":
+            message["unsupported"] = {"type": " Poll_Creation "}
+    unsupported = next(m for m in parse_webhook(payload).messages if m.type == "unsupported")
+    assert unsupported.unsupported_type == "Poll_Creation"
+    assert unsupported.summary() == "sent a poll (content not available)"
 
 
 def test_phone_number_id_filter_and_garbage():

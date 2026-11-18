@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import base64
 import html
-import json
 import math
 import re
 import shlex
@@ -27,8 +26,7 @@ import phonenumbers
 from app.config import Settings
 from app.crm.directory import LookupResult, LookupStatus
 from app.whatsapp.media import DownloadedMedia
-from app.whatsapp.parser import MEDIA_TYPES as MEDIA_KINDS
-from app.whatsapp.parser import InboundMessage
+from app.whatsapp.parser import ERROR_MEDIA_DOWNLOAD, ERROR_TYPE_NOT_SUPPORTED, InboundMessage
 
 BASE64_RAW_LINE = 57  # raw bytes per 76-char base64 line
 BASE64_ENCODED_LINE = 78  # 76 chars + CRLF
@@ -146,13 +144,58 @@ def _sender_lines(msg: InboundMessage, settings: Settings) -> list[tuple[str, st
     lines.append(("Phone", phone or "not shared by WhatsApp (sender uses a username or privacy setting)"))
     if msg.username:
         lines.append(("Username", f"@{msg.username}"))
-    if msg.from_bsuid:
-        lines.append(("WhatsApp user id", msg.from_bsuid))
     lines.append(("Received", _local_time(msg.timestamp, settings.mail_timezone)))
-    if msg.business_display_number:
-        lines.append(("Sent to business number", "+" + re.sub(r"\D", "", msg.business_display_number)))
     lines.append(("Message type", msg.type))
     return lines
+
+
+# Meta error codes explained in plain English on unsupported messages, so WhatsApp's own error line
+# is left out for them. Any other error code keeps WhatsApp's line.
+PLAIN_ENGLISH_ERRORS = {ERROR_TYPE_NOT_SUPPORTED, ERROR_MEDIA_DOWNLOAD}
+
+
+def _unsupported_lines(msg: InboundMessage) -> list[str]:
+    """Plain-English explanation of a message WhatsApp could not pass on to the webhook."""
+    if msg.media_download_failed:
+        return [
+            "The sender attached a file WhatsApp couldn't download (for example, a file over 100 MB).",
+            "Please ask the sender to send the file another way, such as by email.",
+        ]
+    wording = msg.unsupported_wording
+    label = msg.unsupported_type
+    if wording:
+        what = wording[1]
+    elif label:
+        what = f"The sender sent a message WhatsApp can't pass on (WhatsApp's label: {label})."
+    else:
+        what = "The sender sent a message WhatsApp can't pass on."
+    return [
+        what,
+        "WhatsApp doesn't pass this kind of message to the forwarder, so its content isn't available.",
+        "Please ask the sender to send it again as a normal text, photo or file.",
+    ]
+
+
+def _note_lines(msg: InboundMessage) -> list[str]:
+    """Where the message came from: forwarded by the sender, or opened from an ad or link."""
+    out: list[str] = []
+    if msg.context and (msg.context.forwarded or msg.context.frequently_forwarded):
+        out.append(
+            "Forwarded message" + (" (frequently forwarded)" if msg.context.frequently_forwarded else "")
+        )
+    if msg.referral:
+        ref = msg.referral
+        out.append("Came from an ad / link:")
+        for key, value in (
+            ("headline", ref.headline),
+            ("body", ref.body),
+            ("source", ref.source_type),
+            ("url", ref.source_url),
+            ("click id", ref.ctwa_clid),
+        ):
+            if value:
+                out.append(f"  {key}: {value}")
+    return out
 
 
 def _content_lines(msg: InboundMessage) -> list[str]:
@@ -226,13 +269,18 @@ def _content_lines(msg: InboundMessage) -> list[str]:
     elif msg.type == "request_welcome":
         out.append("The sender opened a conversation with the business (no text yet).")
     elif msg.type == "unsupported":
-        out.append(
-            "WhatsApp could not deliver this message type to the webhook (unsupported by the Cloud API)."
-        )
+        out.extend(_unsupported_lines(msg))
     else:
-        out.append(f"Message of type '{msg.type}' (not rendered; the raw message is in the details section).")
+        out.append(f"The sender sent a message the forwarder can't display (WhatsApp's label: {msg.type}).")
     for err in msg.errors:
+        if msg.type == "unsupported" and err.code in PLAIN_ENGLISH_ERRORS:
+            continue  # already explained in plain English above
         out.append(f"WhatsApp error: {err.describe()}")
+    notes = _note_lines(msg)
+    if notes:
+        if out:
+            out.append("")
+        out.extend(notes)
     return out
 
 
@@ -264,8 +312,6 @@ def _crm_lines(lookup: LookupResult) -> list[str]:
         out.append("Replies to this email will NOT reach the sender.")
     else:
         out.append("CRM lookup is disabled on this server.")
-    if lookup.index_age_seconds is not None:
-        out.append(f"(CRM index age: {int(lookup.index_age_seconds // 60)} min)")
     return out
 
 
@@ -310,46 +356,6 @@ def _posix_rebuild_command(filename: str, chunk_names: list[str]) -> str:
     if len(chunk_names) <= MAX_LISTED_PARTS:
         return "cat " + " ".join(shlex.quote(n) for n in chunk_names) + " > " + shlex.quote(filename)
     return "cat " + shlex.quote(filename) + ".[0-9][0-9][0-9] > " + shlex.quote(filename)
-
-
-KNOWN_TYPES = {
-    "text", "image", "video", "audio", "document", "sticker", "location", "contacts", "interactive",
-    "button", "reaction", "order", "system", "request_welcome", "unsupported",
-}  # fmt: skip
-RAW_DETAILS_LIMIT = 2000
-
-
-def _details_lines(msg: InboundMessage) -> list[str]:
-    out = [f"WhatsApp message id: {msg.wamid}"]
-    if msg.business_phone_number_id:
-        out.append(f"Business phone number id: {msg.business_phone_number_id}")
-    if msg.type not in KNOWN_TYPES or (msg.media is None and msg.type in MEDIA_KINDS):
-        raw = json.dumps(msg.raw, ensure_ascii=False, sort_keys=True)
-        if len(raw) > RAW_DETAILS_LIMIT:
-            raw = raw[:RAW_DETAILS_LIMIT] + " …(truncated)"
-        out.append(f"Raw message: {raw}")
-    if msg.context:
-        if msg.context.quoted_message_id:
-            out.append(f"In reply to message: {msg.context.quoted_message_id}")
-        if msg.context.forwarded or msg.context.frequently_forwarded:
-            out.append(
-                "Forwarded message" + (" (frequently forwarded)" if msg.context.frequently_forwarded else "")
-            )
-        if msg.context.referred_product:
-            out.append(f"Referred product: {msg.context.referred_product}")
-    if msg.referral:
-        ref = msg.referral
-        out.append("Came from an ad / link:")
-        for key, value in (
-            ("headline", ref.headline),
-            ("body", ref.body),
-            ("source", ref.source_type),
-            ("url", ref.source_url),
-            ("click id", ref.ctwa_clid),
-        ):
-            if value:
-                out.append(f"  {key}: {value}")
-    return out
 
 
 def _render_text(sections: list[tuple[str, list[str]]], header: list[tuple[str, str]]) -> str:
@@ -596,7 +602,6 @@ def _assemble(
         ("Message", _content_lines(msg)),
         ("VShipCRM", _crm_lines(lookup)),
         ("Attachment", _attachment_lines(media, part_index, part_count, chunk_names)),
-        ("Details", _details_lines(msg)),
     ]
     message.set_content(_render_text(sections, header))
     message.add_alternative(_render_html(sections, header), subtype="html")

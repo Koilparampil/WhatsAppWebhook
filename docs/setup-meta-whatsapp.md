@@ -181,8 +181,9 @@ history syncs as `history`; the service ignores both and forwards only incoming 
 ## 7. Limits that matter here
 
 - Inbound media: images 5 MB, audio and video 16 MB, documents 100 MB, stickers 500 KB. Files above
-  100 MB never arrive; Meta sends an `unsupported` message with error 131052, which the service
-  forwards as an email stating the error.
+  100 MB never arrive; Meta sends a webhook with error 131052 ("Media file size too big") instead. On
+  an `unsupported` message the email says WhatsApp couldn't download the file and asks staff to have it
+  sent another way; on any other message type the email shows WhatsApp's error line.
 - Webhook payloads are up to 3 MB and may batch many messages; deliveries are retried for up to 7
   days and duplicates are expected. The service de-duplicates on the WhatsApp message id.
 - The sender's phone number may be absent from a payload (WhatsApp usernames and business-scoped

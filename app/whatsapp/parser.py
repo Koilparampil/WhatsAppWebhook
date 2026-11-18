@@ -12,6 +12,35 @@ from typing import Any
 
 MEDIA_TYPES = {"image", "video", "audio", "document", "sticker"}
 
+# Meta error codes that the email explains in plain English for unsupported messages.
+ERROR_TYPE_NOT_SUPPORTED = 131051  # Cloud API does not support the message type
+ERROR_MEDIA_DOWNLOAD = 131052  # WhatsApp could not download a file the sender attached
+
+# Plain-English wording for Meta's ``unsupported.type`` labels: (subject phrase, email sentence).
+# Meta documents only the label names, so only labels whose meaning is clear are described here;
+# every other label (button, errors, hsm, interactive, link_preview, list, media_placeholder, order,
+# product, ...) and a missing label get the generic wording.
+UNSUPPORTED_WORDING: dict[str, tuple[str, str]] = {
+    "edit": ("edited an earlier message", "The sender edited a message they sent earlier."),
+    "poll_creation": ("sent a poll", "The sender created a poll."),
+    "poll_update": ("voted in a poll", "The sender voted in a poll."),
+    "pin": ("pinned a message", "The sender pinned a message in the chat."),
+    "keep_in_chat": (
+        'used "Keep in chat" on a disappearing message',
+        'The sender used "Keep in chat" on a disappearing message.',
+    ),
+    "gif": ("sent a GIF", "The sender sent a GIF."),
+    "image": ("sent an image", "The sender sent an image."),
+    "location": ("shared a location", "The sender shared a location."),
+    "reaction": ("reacted to a message", "The sender reacted to a message."),
+    "group_invite": (
+        "shared an invite to a WhatsApp group",
+        "The sender shared an invite to a WhatsApp group.",
+    ),
+}
+UNSUPPORTED_GENERIC_SUMMARY = "sent a message WhatsApp can't pass on"
+MEDIA_DOWNLOAD_SUMMARY = "sent a file WhatsApp couldn't download"
+
 
 @dataclass(slots=True)
 class MediaRef:
@@ -106,11 +135,22 @@ class InboundMessage:
     context: Context | None = None
     errors: list[MessageError] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
+    unsupported_type: str | None = None  # Meta's unsupported.type label, e.g. "edit"
 
     @property
     def phone_e164(self) -> str | None:
         digits = "".join(ch for ch in (self.from_phone or "") if ch.isdigit())
         return f"+{digits}" if digits else None
+
+    @property
+    def media_download_failed(self) -> bool:
+        """WhatsApp reported that it could not download a file the sender attached (error 131052)."""
+        return any(err.code == ERROR_MEDIA_DOWNLOAD for err in self.errors)
+
+    @property
+    def unsupported_wording(self) -> tuple[str, str] | None:
+        """(subject phrase, email sentence) when the unsupported label has a plain description."""
+        return UNSUPPORTED_WORDING.get((self.unsupported_type or "").lower())
 
     @property
     def sender_label(self) -> str:
@@ -173,7 +213,10 @@ class InboundMessage:
         if t == "request_welcome":
             return "started a conversation"
         if t == "unsupported":
-            return "sent an unsupported message type"
+            if self.media_download_failed:
+                return MEDIA_DOWNLOAD_SUMMARY
+            wording = self.unsupported_wording
+            return f"{wording[0]} (content not available)" if wording else UNSUPPORTED_GENERIC_SUMMARY
         return f"sent a {t} message"
 
 
@@ -368,6 +411,8 @@ def _parse_message(
         }
     elif mtype == "system":
         message.system = dict(body)
+    elif mtype == "unsupported":
+        message.unsupported_type = (_str(body.get("type")) or "").strip() or None
     return message
 
 

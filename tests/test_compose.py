@@ -187,3 +187,146 @@ def test_chunk_size_is_deterministic_and_bounded():
     )
     with pytest.raises(ComposeError):
         chunk_size_for(32_000_000, 300_000)
+
+
+ERR_TYPE_NOT_SUPPORTED = {
+    "code": 131051,
+    "title": "Message type unknown",
+    "message": "Message type unknown",
+    "error_data": {"details": "Message type is currently not supported."},
+}
+ERR_FILE_TOO_BIG = {
+    "code": 131052,
+    "title": "Media file size too big. Max file size we currently support: 100MB.",
+    "message": "Media file size too big. Max file size we currently support: 100MB.",
+}
+ERR_UNAVAILABLE = {
+    "code": 131060,
+    "title": "This message is currently unavailable.",
+    "message": "This message is currently unavailable.",
+}
+NOT_AVAILABLE = "WhatsApp doesn't pass this kind of message to the forwarder, so its content isn't available."
+RESEND = "Please ask the sender to send it again as a normal text, photo or file."
+
+
+def unsupported_payload(label: str | None = "edit", errors: list[dict] | None = None) -> dict:
+    payload = text_payload()
+    message = payload["entry"][0]["changes"][0]["value"]["messages"][0]
+    message.pop("text")
+    message["type"] = "unsupported"
+    message["errors"] = [ERR_TYPE_NOT_SUPPORTED] if errors is None else errors
+    if label is not None:
+        message["unsupported"] = {"type": label}
+    return payload
+
+
+def render(payload: dict, settings, lookup: LookupResult | None = None):
+    msg = parse_webhook(payload).messages[0]
+    m = build_emails(msg, lookup or no_match_lookup(), None, settings)[0].message
+    return m, m.get_body(("plain",)).get_content(), m.get_body(("html",)).get_content()
+
+
+def test_unsupported_with_clear_label_is_described_in_plain_english(settings):
+    m, text, html = render(unsupported_payload("edit"), settings)
+    assert m["Subject"] == (
+        "[WhatsApp] Sheena Nelson (+1 650-555-1234): edited an earlier message (content not available)"
+    )
+    lines = text.splitlines()
+    assert "The sender edited a message they sent earlier." in lines
+    assert NOT_AVAILABLE in lines
+    assert RESEND in lines
+    assert "WhatsApp error" not in text and "131051" not in text
+    assert "The sender edited a message they sent earlier." in html and "131051" not in html
+
+
+@pytest.mark.parametrize(
+    ("label", "expected"),
+    [
+        (
+            "media_placeholder",
+            "The sender sent a message WhatsApp can't pass on (WhatsApp's label: media_placeholder).",
+        ),
+        (None, "The sender sent a message WhatsApp can't pass on."),
+    ],
+)
+def test_unsupported_unclear_or_missing_label_gets_generic_line(settings, label, expected):
+    m, text, _ = render(unsupported_payload(label), settings)
+    assert m["Subject"].endswith(": sent a message WhatsApp can't pass on")
+    lines = text.splitlines()
+    assert expected in lines
+    assert NOT_AVAILABLE in lines
+    assert RESEND in lines
+
+
+def test_unsupported_file_too_big_gets_its_own_wording(settings):
+    m, text, _ = render(unsupported_payload(None, errors=[ERR_FILE_TOO_BIG]), settings)
+    assert m["Subject"].endswith(": sent a file WhatsApp couldn't download")
+    lines = text.splitlines()
+    assert "The sender attached a file WhatsApp couldn't download (for example, a file over 100 MB)." in lines
+    assert "Please ask the sender to send the file another way, such as by email." in lines
+    assert NOT_AVAILABLE not in lines
+    assert RESEND not in lines
+    assert "WhatsApp error" not in text
+
+
+def test_unsupported_other_error_codes_keep_whatsapps_error_line(settings):
+    _, text, _ = render(unsupported_payload("edit", errors=[ERR_UNAVAILABLE]), settings)
+    assert "The sender edited a message they sent earlier." in text
+    assert "WhatsApp error: code 131060 - This message is currently unavailable." in text
+
+
+def test_removed_fields_stay_out_and_hidden_headers_stay(settings):
+    payload = text_payload(
+        context={
+            "from": "15550783881",
+            "id": "wamid.ORIGINAL",
+            "forwarded": True,
+            "referred_product": {"catalog_id": "CAT1", "product_retailer_id": "SKU-9"},
+        }
+    )
+    message = payload["entry"][0]["changes"][0]["value"]["messages"][0]
+    message["referral"] = {
+        "source_url": "https://fb.me/vship-ad",
+        "source_type": "ad",
+        "headline": "Ship with VShip",
+        "ctwa_clid": "CLID-1",
+    }
+    m, text, html = render(payload, settings, matched_lookup())
+    for gone in (
+        "WhatsApp user id",
+        "US.13491208655302741918",
+        "Sent to business number",
+        "+15550783881",
+        "Details",
+        "WhatsApp message id",
+        "Business phone number id",
+        "In reply to message",
+        "Referred product",
+        "SKU-9",
+        "CRM index age",
+    ):
+        assert gone not in text, gone
+        assert gone not in html, gone
+    message_section = text.split("----- Message -----")[1].split("----- VShipCRM -----")[0]
+    assert "Forwarded message" in message_section
+    assert "Came from an ad / link:" in message_section
+    assert "  headline: Ship with VShip" in message_section
+    assert "  click id: CLID-1" in message_section
+    assert m["X-WhatsApp-Message-Id"] == "wamid.HBgLMTY1MDU1NTEyMzQVAgASGBQzQTRBNjU5OUFFRTAzODEwMTQ0RgA="
+    assert m["X-WhatsApp-BSUID"] == "US.13491208655302741918"
+    assert m["X-WhatsApp-From"] == "+16505551234"
+    assert m["X-WhatsApp-Type"] == "text"
+    assert m["X-WhatsApp-CRM-Match"] == "customer:42"
+    assert m["In-Reply-To"] == "<wa.wamid.ORIGINAL@example.com>"
+
+
+def test_unrecognised_type_is_named_without_raw_data(settings):
+    payload = text_payload()
+    message = payload["entry"][0]["changes"][0]["value"]["messages"][0]
+    message.pop("text")
+    message["type"] = "brand_new_type"
+    message["brand_new_type"] = {"secret": "raw-value"}
+    _, text, _ = render(payload, settings)
+    expected = "The sender sent a message the forwarder can't display (WhatsApp's label: brand_new_type)."
+    assert expected in text.splitlines()
+    assert "raw-value" not in text and "Raw message" not in text

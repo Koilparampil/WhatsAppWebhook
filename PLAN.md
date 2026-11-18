@@ -63,7 +63,8 @@ Primary sources are cited in the setup guides under `docs/`.
 
 Inbound types handled: `text`, `image`, `audio` (voice notes included), `video`, `document`, `sticker`,
 `location`, `contacts`, `interactive`, `button`, `reaction`, `order`, `request_welcome`, `system`,
-`unsupported` (with Meta's error text), unknown future types (raw message included), plus `context`
+`unsupported` (described in plain English when Meta's label is clear, otherwise a generic line naming
+the label, plus a request to resend), unknown future types (named by their label), plus `context`
 (quoted replies, forwarded) and `referral` (click-to-WhatsApp ads).
 
 ### 2.2 VShipCRM API (`https://vship2000-prod-api.azurewebsites.net`)
