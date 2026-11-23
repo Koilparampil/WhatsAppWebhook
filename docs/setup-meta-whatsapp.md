@@ -72,12 +72,16 @@ rather than a one-time token.
 | App Secret | App Dashboard > **App settings > Basic** > App secret (**Show**) | `WA_APP_SECRET` |
 | System User token | step 5 above | `WA_ACCESS_TOKEN` |
 | Verify token | any long random string you invent, e.g. `openssl rand -hex 32` | `WA_VERIFY_TOKEN` |
-| Messaging account (WABA) id | API Setup panel, or Business Settings > Accounts | `WA_WABA_ID` |
-| Phone number id | API Setup panel, or `whatsapp-webhook meta-check` | `WA_PHONE_NUMBER_ID` (optional filter) |
+| Messaging account (WABA) id | API Setup panel, or Business Settings > Accounts | `WA_WABA_ID` (required for WhatsApp updates from email) |
+| Phone number id | API Setup panel, or `whatsapp-webhook meta-check` | `WA_PHONE_NUMBER_ID` (optional filter); the sending number of WhatsApp updates goes into `RELAY_PHONE_NUMBER_ID` |
 | Graph API version | current: `v27.0` (released 4 Nov 2026; each version is supported for at least two years) | `WA_GRAPH_API_VERSION` |
 
 Store them only in `/etc/whatsapp-webhook/env` on the VM (owner root, group whwebhook, mode 640:
 readable by root and the service user only). Never commit them.
+
+Sending WhatsApp updates from email (optional feature) needs more on the Meta side: a payment method in
+Billing Hub, the approved Utility template `vship_update`, and the app in Live mode. All steps are in
+[whatsapp-updates-setup.md](whatsapp-updates-setup.md), section 3.
 
 ## 4. Configure the webhook
 

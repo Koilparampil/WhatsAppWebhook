@@ -1,7 +1,8 @@
 # Plan: WhatsApp Business → Email forwarder with VShipCRM Reply-To lookup
 
 Status: **Implemented**; awaiting the owner's live rollout (plan confirmed 2026-11-09).
-Last updated: 2026-11-10. Sections 1 to 9 describe the system as built; the decisions log records why.
+Last updated: 2026-11-19 (branch `sendUpgrade`: WhatsApp updates from email, section 5.6). Sections 1 to 9
+describe the system as built; the decisions log records why.
 
 ## 0. Decisions log
 
@@ -25,6 +26,12 @@ Last updated: 2026-11-10. Sections 1 to 9 describe the system as built; the deci
 | CRM records | inactive customers are not searched | `CRM_INCLUDE_INACTIVE=false` |
 | Alerts | same recipients as the forwarded mail; alerts retry for **12 hours**; no alerts about alerts | `ALERT_RETRY_WINDOW_SECONDS=43200` |
 | Split format (confirmed) | `name.001`, `name.002`, …; every email states its part number and the `copy /b`, `cat` and 7-Zip rebuild commands | app/mail/compose.py |
+| WhatsApp updates from email (2026-11-19, branch `sendUpgrade`) | an employee on a fixed list emails `whatsapp@vship2000.com` with subject `WA \| phone \| booking` and a `Name:` / `Message:` / `##` body; the service sends the approved Utility template `vship_update` (en_US); reply behaviour stays exactly as at 570fd03 | `RELAY_*` settings, app/relay/, section 5.6, docs/whatsapp-updates-setup.md (all 28 owner decisions in its section 12) |
+| Who may send updates | fixed address list, plus Exchange's `AuthAs: Internal` mark, From = Sender, no automatic mail; no Exchange lock-down of the mailbox | `RELAY_ALLOWED_SENDERS`, `RELAY_REQUIRE_INTERNAL_AUTH` |
+| Template content | line breaks in the Message joined with a space (WhatsApp refuses them in variables); empty Name -> "there"; at most 820 characters (the whole text then fits Meta's 1,024); sent only while the template is Approved + Utility at Meta | `RELAY_MAX_MESSAGE_CHARS`, `RELAY_NAME_FALLBACK`, `RELAY_TEMPLATE_CHECK_SECONDS` |
+| Sending safety | never retried after an unclear answer from WhatsApp (no duplicates); commands older than 24 h refused; identical repeats sent; rollout dry-run -> test numbers -> live | `RELAY_DRY_RUN`, `RELAY_TEST_NUMBERS`, `RELAY_MAX_AGE_HOURS` |
+| Booking and files | booking number goes to a second template once its wording exists; files: free-form inside the customer's 24-hour window, PDFs through a document-header template outside it (Meta: document headers take PDF only), otherwise listed as not sent | `RELAY_BOOKING_TEMPLATE_*`, `RELAY_DOCUMENT_TEMPLATE_*` |
+| Sending number | own setting, so that switching the feature on never turns on `WA_PHONE_NUMBER_ID`'s forwarding filter | `RELAY_PHONE_NUMBER_ID` |
 
 ---
 
@@ -55,7 +62,7 @@ Primary sources are cited in the setup guides under `docs/`.
 | Every `POST` carries `X-Hub-Signature-256: sha256=<HMAC-SHA256 of the raw body keyed with the App Secret>`. | Verified on the raw bytes before parsing; 403 otherwise. |
 | Meta retries failed deliveries (36 hours on the generic Graph page, up to 7 days on the WhatsApp pages) and duplicates happen. | 200 at once after queueing; de-duplication on the message id (wamid). |
 | Payloads up to 3 MB, batched. | Every `entry[].changes[]` is processed; Caddy rejects bodies over 4 MB. |
-| Delivery receipts (`statuses[]`) arrive on the same `messages` field. | Counted and ignored, never emailed. |
+| Delivery receipts (`statuses[]`) arrive on the same `messages` field. | Counted and never forwarded. Only while WhatsApp updates from email run (5.6), a `failed` receipt is queued as well, and when it is about a message that feature sent, its sender is emailed; every other receipt is ignored. |
 | Business-scoped user ids (`messages[].from_user_id`, `contacts[].user_id`) since April 2026; the phone number (`from`, `wa_id`) may be omitted for username users. | Phone is optional; without it the lookup is skipped and the display name, username and BSUID are used. |
 | Media is a numeric id: `GET /{version}/{media-id}` gives a URL valid 5 minutes, fetched with the same bearer token; ids live 7 days; documents up to 100 MB. | Downloaded at processing time, streamed to a spool file; ids are validated as numeric before use. |
 | Graph API v27.0 is current (4 Nov 2026). | `WA_GRAPH_API_VERSION=v27.0`. |
@@ -136,7 +143,11 @@ WhatsAppWebhook/
 │   ├── store.py          SQLite queue: dedup, claim, retry, crash count, part progress, dead letter
 │   ├── worker.py         processing loop, retries, Retry-After pause, crash recovery, alerts
 │   ├── cli.py            operator commands (installed as /usr/local/bin/whatsapp-webhook)
-│   ├── whatsapp/         parser.py, media.py (download), admin.py (meta-check / meta-subscribe)
+│   ├── whatsapp/         parser.py, media.py (download), admin.py (meta-check / meta-subscribe),
+│   │                     send.py (template and media messages to customers)
+│   ├── relay/            WhatsApp updates from email: poller.py (reads the Inbox), mailbox.py (Graph),
+│   │                     mailinfo.py, html.py, command.py (subject/body rules), templates.py (Meta status
+│   │                     check), processor.py (decide + send, never twice), files.py, notices.py, check.py
 │   ├── crm/              client.py (login, lists), phones.py (E.164, ranking), directory.py (index)
 │   └── mail/             compose.py (emails, split plan, rebuild commands), transports.py (Graph, SMTP)
 ├── deploy/               Caddyfile, systemd unit, install.sh, gcp/provision.sh, gcp/deploy.sh
@@ -155,9 +166,14 @@ Stack: Python 3.13 (Debian 13), FastAPI with one uvicorn worker, httpx, pydantic
 - `GET /webhook`: `hub.mode=subscribe` and a matching `hub.verify_token` → 200 with `hub.challenge`; else 403.
 - `POST /webhook`: signature check on the raw body (403 on failure), JSON parse (400 on failure), each
   `messages[]` entry stored with `INSERT OR IGNORE` keyed by wamid, response
-  `{"status": "ok", "queued": N, "duplicates": M}`. Statuses and other fields are logged and dropped.
-  With `WA_PHONE_NUMBER_ID` set, messages for other business numbers are skipped and logged.
-- `GET /healthz`: queue counters, worker state, CRM index age; reachable on localhost only.
+  `{"status": "ok", "queued": N, "duplicates": M}`. Statuses and other fields are logged and dropped,
+  except that while WhatsApp updates from email run (5.6) each `failed` status is also queued (kind
+  `relay_status`, key `relay_status:<wamid>`; not again once its sender was told): the relay emails the
+  sender when the message was one it sent and ignores the others. The response stays the same. With
+  `WA_PHONE_NUMBER_ID` set, messages for other business numbers are skipped and logged.
+- `GET /healthz`: queue counters, worker state, CRM index age and a `relay` block (only
+  `{"enabled": false}` while that feature is not running, plus `"error"` when it failed to start; it
+  never changes the status code); reachable on localhost only.
 
 ### 5.2 Worker
 
@@ -174,10 +190,18 @@ Stack: Python 3.13 (Debian 13), FastAPI with one uvicorn worker, httpx, pydantic
    attempt (12 hours for alert emails), waiting at least as long as a `Retry-After` header asks and
    pausing all sends meanwhile; or dead-letter, which queues an alert email for message items (alerts
    never raise alerts). Writes that hit a busy database are retried; the loop itself never dies.
+   The items of WhatsApp updates from email (5.6) follow the same rules, except: the feature's emails
+   (kind `note`) retry for 12 hours like alerts; a `Retry-After` from WhatsApp holds back only that
+   update, never the other sends (the mail service's `Retry-After` still pauses all sends, these
+   included); a `relay` item given up while the feature runs queues an alert to `ALERT_TO` and, for a
+   command whose employee had not been told the outcome yet, that email too; and while the feature is
+   off its items wait (looked at again every hour) instead of being given up.
 7. Startup: rows left in `processing` were interrupted by a crash; they are retried with backoff and
    dead-lettered after 3 crashes. A graceful shutdown hands the in-flight row back without counting a
    crash. Partial downloads in the marked spool directory are deleted.
-8. Finished rows (and their raw payloads) are purged after `STORE_RETENTION_DAYS` (30).
+8. Finished rows (and their raw payloads) are purged after `STORE_RETENTION_DAYS` (30), and with them
+   the step state of relay items no longer in the queue and the records of the WhatsApp messages the
+   relay sent (5.6).
 
 ### 5.3 CRM lookup
 
@@ -216,6 +240,39 @@ Every setting is documented in `.env.example`; on the VM the values live in
 `/etc/whatsapp-webhook/env` (root:whwebhook, mode 640). Placeholder or short secrets are rejected at
 startup, and the CLI exits with code 78 on a configuration error so systemd does not restart-loop.
 
+### 5.6 WhatsApp updates from email (`RELAY_ENABLED=true`, branch `sendUpgrade`)
+
+- **Reading.** A poller lists the Inbox of the relay mailbox (default `GRAPH_SENDER`) through Graph every
+  `RELAY_POLL_SECONDS` with immutable ids and queues only emails whose subject starts with `WA |` (queue
+  kind `relay`, key = the immutable id). The cursor starts when the feature is first switched on; mail
+  already there is never handled. Everything else in the Inbox is left untouched.
+- **Deciding** (stored, so a retry never decides again). Who sent an email is decided from a read without
+  its text; only an email that passes is read in full (and checked again). Ignored, left in the Inbox:
+  automatic mail, the mailbox's own mail, a sender not on `RELAY_ALLOWED_SENDERS`, mail without Exchange's
+  `AuthAs: Internal` mark, mail sent on behalf of someone, mail whose subject was edited in the mailbox
+  after it arrived, a draft written in the mailbox (the last five also go into a daily `ALERT_TO` digest).
+  Refused
+  with a notice to the employee and filed: older than `RELAY_MAX_AGE_HOURS`, subject or body against the
+  rules (app/relay/command.py), test mode, template not Approved + Utility (also `ALERT_TO`).
+- **Sending.** Template `RELAY_TEMPLATE_NAME` (or the booking template when the subject has a booking
+  number and it is configured) with `{{n}}` filled per `RELAY_*_PARAMS`, from `RELAY_PHONE_NUMBER_ID`.
+  Files after it: free-form inside the customer's 24-hour window (known from the forwarded messages), PDFs
+  through the document template outside it. Every step is saved before and after; an unclear outcome is
+  never repeated and is reported as "may not have been sent".
+- **Telling the employee.** Notices (queue kind `note`, threaded under the command email): sent, NOT sent,
+  MAY NOT have been sent, dry run, and later "could not deliver" from status webhooks of the wamids this
+  feature sent. Then the command email is moved to `RELAY_FOLDER`.
+- **Giving up.** When the worker gives up on a `relay` item, `ALERT_TO` gets an alert (queued, with the
+  employee's outcome email, before the item is marked failed). If the email had been read and its sender
+  checked by then, whatever has not gone out yet never will: those steps are marked skipped, the
+  employee who sent a command is told the outcome (unless told already), and `replay-failed` only
+  finishes the bookkeeping. An item given up before its email could be read is handled as new on replay
+  (refused if older than `RELAY_MAX_AGE_HOURS`). While the feature is off, relay items wait instead of
+  being given up, even at the crash cap. docs/operations.md, "Delivery failures", lists every case.
+- **Unchanged.** Forwarding (5.2 to 5.4 for message items), Reply-To and the webhook's answer to Meta.
+  What the feature adds to 2.1, 5.1 and 5.2 (queued `failed` statuses, the `/healthz` relay block, its
+  retry, dead-letter and purge rules) is noted there.
+
 ## 6. Deployment
 
 ### 6.1 `deploy/gcp/provision.sh` (run by the owner with gcloud)
@@ -228,7 +285,9 @@ us-east1-b, debian-13, 30 GB pd-standard, Shielded VM, no service account, delet
 
 ### 6.2 `deploy/gcp/deploy.sh` and `deploy/install.sh`
 
-`deploy.sh` packs the tracked files, copies them over IAP and runs `install.sh` as root, which is
+`deploy.sh` stops if a file under `app/` or `deploy/` (or `requirements.txt`, `pyproject.toml`) is not
+tracked by git, packs the tracked files, copies them over IAP and runs `install.sh` as root, which refuses
+a copy that lacks a module the code imports (before anything is replaced) and is otherwise
 idempotent: base packages; Caddy from its official repository (verified origin); service user
 `whwebhook`; code in `/opt/whatsapp-webhook` with a virtualenv; env file created once from
 `.env.example`; operator wrapper `/usr/local/bin/whatsapp-webhook`; systemd unit; Caddyfile (Caddy is
@@ -279,5 +338,9 @@ Remaining, by the owner (see README "Quick start"):
    (`check-config`, `test-crm`, `test-email`, `meta-check`).
 6. Configure the webhook in the Meta App Dashboard and send test messages from a phone.
 
-Out of scope unless requested: replying from email back into WhatsApp, a message archive or UI,
-multiple tenants.
+Branch `sendUpgrade` (WhatsApp updates from email): the owner's steps are in
+[docs/whatsapp-updates-setup.md](docs/whatsapp-updates-setup.md) (Meta template and billing, Microsoft 365
+checks, deploy with the feature off, dry run, test numbers, live).
+
+Out of scope unless requested: replying from email back into WhatsApp (the separate, uncommitted
+staff-replies work is not part of `sendUpgrade`), a message archive or UI, multiple tenants.

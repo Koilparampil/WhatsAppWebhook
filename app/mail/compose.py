@@ -358,15 +358,18 @@ def _posix_rebuild_command(filename: str, chunk_names: list[str]) -> str:
     return "cat " + shlex.quote(filename) + ".[0-9][0-9][0-9] > " + shlex.quote(filename)
 
 
-def _render_text(sections: list[tuple[str, list[str]]], header: list[tuple[str, str]]) -> str:
+def _render_text(
+    sections: list[tuple[str, list[str]]], header: list[tuple[str, str]], title: str = "WhatsApp message"
+) -> str:
     width = max(len(k) for k, _ in header)
-    lines = ["WhatsApp message"]
+    lines = [title]
     lines.extend(f"{k.ljust(width)} : {v}" for k, v in header)
-    for title, body in sections:
+    # The loop variable must not be called ``title``: that would overwrite the heading parameter.
+    for section_title, body in sections:
         if not body:
             continue
         lines.append("")
-        lines.append(f"----- {title} -----")
+        lines.append(f"----- {section_title} -----")
         lines.extend(body)
     lines.append("")
     lines.append("This email was generated automatically by the WhatsApp email forwarder.")
@@ -376,7 +379,9 @@ def _render_text(sections: list[tuple[str, list[str]]], header: list[tuple[str, 
 _MAPS_LINK = re.compile(r"(https://www\.google\.com/maps/search/\?api=1&amp;query=[-0-9.,]+)")
 
 
-def _render_html(sections: list[tuple[str, list[str]]], header: list[tuple[str, str]]) -> str:
+def _render_html(
+    sections: list[tuple[str, list[str]]], header: list[tuple[str, str]], title: str = "WhatsApp message"
+) -> str:
     esc = html.escape
     rows = "".join(
         f'<tr><th style="text-align:left;padding:2px 10px 2px 0;color:#555;white-space:nowrap">{esc(k)}</th>'
@@ -384,19 +389,21 @@ def _render_html(sections: list[tuple[str, list[str]]], header: list[tuple[str, 
         for k, v in header
     )
     blocks = []
-    for title, body in sections:
+    # The loop variable must not be called ``title``: the <h2> below is built after the loop and would
+    # show the last section's name instead of the heading parameter.
+    for section_title, body in sections:
         if not body:
             continue
         content = "<br>".join(esc(line) if line else "&nbsp;" for line in body)
         # Only the map link the service generated becomes clickable; sender-supplied URLs stay text.
         content = _MAPS_LINK.sub(r'<a href="\1">\1</a>', content)
         blocks.append(
-            f'<h3 style="margin:18px 0 6px;font-size:14px;color:#222">{esc(title)}</h3>'
+            f'<h3 style="margin:18px 0 6px;font-size:14px;color:#222">{esc(section_title)}</h3>'
             f'<div style="white-space:pre-wrap;font-family:inherit">{content}</div>'
         )
     return (
         '<!doctype html><html><body style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#111">'
-        '<h2 style="margin:0 0 10px;font-size:16px">WhatsApp message</h2>'
+        f'<h2 style="margin:0 0 10px;font-size:16px">{esc(title)}</h2>'
         f'<table style="border-collapse:collapse">{rows}</table>'
         + "".join(blocks)
         + '<p style="margin-top:20px;color:#777;font-size:12px">'
