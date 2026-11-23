@@ -18,6 +18,17 @@ trap 'rm -f "$ARCHIVE"' EXIT
 # Unique name on the VM: a leftover /tmp file owned by another login (sticky /tmp) cannot be overwritten.
 REMOTE_ARCHIVE="/tmp/whatsapp-webhook-$(date +%Y%m%d%H%M%S)-$$.tgz"
 
+echo "==> Checking that every file the service needs is tracked by git"
+# Only the files git tracks are packed (below): a new file that was never added to git would be left out, and
+# install.sh would then refuse the copy on the VM. Stop here instead, before anything is uploaded.
+untracked=$(git -C "$REPO_ROOT" ls-files --others --exclude-standard -- app deploy requirements.txt pyproject.toml)
+if [[ -n "$untracked" ]]; then
+  echo "These files are not tracked by git, so they would be left out of the deploy:" >&2
+  echo "$untracked" >&2
+  echo "Add them to git (git add), commit them and run this script again. Nothing was uploaded." >&2
+  exit 1
+fi
+
 echo "==> Packaging tracked files from $REPO_ROOT"
 (cd "$REPO_ROOT" && git ls-files -z | tar --null -czf "$ARCHIVE" -T -)
 

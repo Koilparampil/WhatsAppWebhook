@@ -33,6 +33,13 @@ def _fmt_ts(ts: float | None, tz_name: str = "UTC") -> str:
 async def cmd_check_config(args: argparse.Namespace) -> int:
     settings = load_settings()
     print(json.dumps(settings.redacted(), indent=2, default=str))
+    # Relay problems never fail the check (install.sh restarts the service only when it passes, and the
+    # forwarder must keep running); they are shown so that nobody believes the feature is on.
+    for problem in settings.relay_problems():
+        print(
+            f"WARNING: WhatsApp updates from email will NOT start until this is fixed: {problem}",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -249,6 +256,29 @@ async def cmd_meta_subscribe(args: argparse.Namespace) -> int:
     return 0 if ok else 2
 
 
+async def cmd_relay_check(args: argparse.Namespace) -> int:
+    """Check what WhatsApp updates from email need: mailbox, templates, sending number (reads only)."""
+    from app.relay.check import run_check
+
+    settings = load_settings()
+    async with httpx.AsyncClient(timeout=60) as http:
+        return await run_check(settings, http, sample=args.sample)
+
+
+def cmd_relay_parse(args: argparse.Namespace) -> int:
+    """Read a WhatsApp update email offline, as the service would, and print the result."""
+    from app.relay.check import EXIT_NOT_READY, run_parse
+
+    settings = load_settings()
+    try:
+        with open(args.body_file, encoding="utf-8-sig", errors="replace") as handle:
+            body = handle.read()
+    except OSError as exc:
+        print(f"cannot read {args.body_file}: {exc}", file=sys.stderr)
+        return EXIT_NOT_READY
+    return run_parse(settings, args.subject, body, html=args.html)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -292,6 +322,21 @@ def main(argv: list[str] | None = None) -> int:
         "meta-check", help="verify the WhatsApp token scopes, phone numbers and webhook subscription"
     )
     sub.add_parser("meta-subscribe", help="subscribe the app to the Messaging account (WABA) webhooks")
+    p = sub.add_parser(
+        "relay-check",
+        help="check that WhatsApp updates from email can work (reads only; exit 0 ready, 2 failed, 1 off)",
+    )
+    p.add_argument(
+        "--sample",
+        action="store_true",
+        help="also show how the newest command email from an allowed sender is read (internal mark, text)",
+    )
+    p = sub.add_parser("relay-parse", help="show how a WhatsApp update email would be read (offline)")
+    p.add_argument("--subject", required=True, help="the email's subject, e.g. 'WA | 650 555 1234 | BK1'")
+    p.add_argument("--body-file", required=True, help="file holding the email's text")
+    p.add_argument(
+        "--html", action="store_true", help="the file holds the email's HTML (as Outlook sends it)"
+    )
     sub.add_parser("run", help="run the web service with uvicorn (systemd uses this)")
     args = parser.parse_args(argv)
     if args.env_file:
@@ -309,6 +354,8 @@ def main(argv: list[str] | None = None) -> int:
         "purge": cmd_purge,
         "meta-check": cmd_meta_check,
         "meta-subscribe": cmd_meta_subscribe,
+        "relay-check": cmd_relay_check,
+        "relay-parse": cmd_relay_parse,
         "run": cmd_run,
     }
     handler = handlers[args.command]

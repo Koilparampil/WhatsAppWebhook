@@ -88,6 +88,79 @@ mkdir -p "$APP_DIR" "$ENV_DIR" "$DATA_DIR/spool"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR"
 chmod 750 "$DATA_DIR"
 
+log "Checking that the copy of the code is complete"
+# Every module the code imports from app/ must be in the copy. deploy/gcp/deploy.sh packs only the files that
+# git tracks, so a new file that was never added to git is left out; the service would then keep running the
+# old code until its next restart (or a crash or reboot) and fail to start after it. Checked before anything
+# in $APP_DIR is replaced. tests/test_relay_config.py runs this check on the repository and on broken copies.
+incomplete=$(python3 - "$SRC" <<'PY'
+import ast
+import sys
+from pathlib import Path
+
+src = Path(sys.argv[1])
+
+
+def module_file(name):
+    path = src.joinpath(*name.split("."))
+    for candidate in (path.with_suffix(".py"), path / "__init__.py"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def defines(init_file, name):
+    """Whether a package's __init__.py binds ``name`` anywhere (then it need not be a module of its own)."""
+    for node in ast.walk(ast.parse(init_file.read_text(encoding="utf-8"))):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == name:
+            return True
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            if any((alias.asname or alias.name.split(".")[0]) == name for alias in node.names):
+                return True
+        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store):
+            return True
+    return False
+
+
+problems = set()
+for path in sorted((src / "app").rglob("*.py")):
+    shown = path.relative_to(src).as_posix()
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), shown)
+    except (SyntaxError, UnicodeDecodeError) as exc:
+        problems.add(f"{shown} cannot be read: {exc}")
+        continue
+    for node in ast.walk(tree):  # also the imports inside functions, which run later
+        if isinstance(node, ast.Import):
+            wanted = [(alias.name, None) for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            wanted = [(node.module, alias.name) for alias in node.names]
+        else:
+            continue
+        for module, name in wanted:
+            if module != "app" and not module.startswith("app."):
+                continue
+            found = module_file(module)
+            if found is None:
+                problems.add(f"{shown} imports {module}, which is not in the copy")
+            elif (
+                name not in (None, "*")
+                and found.name == "__init__.py"
+                and module_file(f"{module}.{name}") is None
+                and not defines(found, name)
+            ):
+                problems.add(f"{shown} imports {module}.{name}, which is not in the copy")
+print("\n".join(sorted(problems)))
+PY
+)
+if [[ -n "$incomplete" ]]; then
+  echo "The copy of the code in $SRC is incomplete, so $APP_DIR was not changed and the service was not" >&2
+  echo "restarted (it keeps running the code installed before):" >&2
+  echo "$incomplete" >&2
+  echo "Add the missing files to git (git status lists them as untracked), commit them and deploy again." >&2
+  exit 1
+fi
+
 log "Copying application code to $APP_DIR"
 rsync -a --delete \
   --exclude '.git' --exclude '.venv' --exclude 'data' --exclude '__pycache__' \
@@ -199,7 +272,17 @@ else
     sleep 2
     systemctl --no-pager --lines=5 status whatsapp-webhook || true
   else
-    echo "check-config failed; fix $ENV_FILE and run: systemctl restart whatsapp-webhook" >&2
+    status=$?
+    if [[ $status -eq 78 ]]; then  # EX_CONFIG: a setting in the env file is wrong (shown above)
+      echo "check-config failed; fix $ENV_FILE and run: systemctl restart whatsapp-webhook" >&2
+    else
+      # Any other failure means the installed program itself cannot start (for example a file is missing),
+      # whatever the env file says: a restart now would stop the service until a working copy is installed.
+      echo "check-config could not run (exit code $status, error shown above): the program installed in" >&2
+      echo "$APP_DIR cannot start; this is not a problem in $ENV_FILE. The service was NOT restarted." >&2
+      echo "Do not restart it until a working copy is installed (deploy again, then this script runs again);" >&2
+      echo "until then a crash or reboot also stops it." >&2
+    fi
   fi
 fi
 

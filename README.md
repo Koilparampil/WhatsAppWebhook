@@ -23,7 +23,8 @@ Meta WhatsApp Cloud API ──HTTPS──► Caddy ──► FastAPI /webhook �
 |---|---|
 | `app/main.py` | FastAPI app: `GET /webhook` (verification), `POST /webhook` (signed payloads), `GET /healthz` |
 | `app/worker.py` | Queue worker: lookup → media → compose → send, retries for 10 min, dead-letter + alert |
-| `app/whatsapp/` | Payload parser (all message types) and media downloader |
+| `app/whatsapp/` | Payload parser (all message types), media downloader, template/media sender |
+| `app/relay/` | WhatsApp updates from email: Inbox poller, command rules, Meta template check, processor, notices |
 | `app/crm/` | VShipCRM client, phone normalisation, customer phone index |
 | `app/mail/` | Email composer (Reply-To, threading headers, splitting) and SMTP / Graph transports |
 | `app/store.py` | SQLite queue with de-duplication on the WhatsApp message id |
@@ -38,6 +39,8 @@ Meta WhatsApp Cloud API ──HTTPS──► Caddy ──► FastAPI /webhook �
 2. [Microsoft 365 sending path, SPF, DKIM, DMARC and Network Solutions DNS](docs/setup-microsoft365-email.md)
 3. [Meta app, System User token and webhook subscription](docs/setup-meta-whatsapp.md)
 4. [Operations runbook](docs/operations.md)
+5. [WhatsApp updates from email: everything to configure, step by step](docs/whatsapp-updates-setup.md),
+   and the [one-page guide for staff](docs/whatsapp-updates-staff.md)
 
 ## Quick start (deployment)
 
@@ -92,3 +95,11 @@ values (secrets need at least 16 characters).
   and carry Exchange's own `Message-ID` and at most five custom headers.
 - Failures retry for 10 minutes (longer if Microsoft asks to wait with `Retry-After`), then
   dead-letter with an alert email; alerts retry for 12 hours; `replay-failed` re-queues.
+
+## WhatsApp updates from email (optional, off by default)
+
+An employee on a fixed list emails the shared mailbox with the subject `WA | <phone> | <booking>` and the
+body `Name:` / `Message:` / `##`; the service sends the customer the approved WhatsApp Utility template
+`vship_update` and emails the employee what happened (sent, not sent and why, or a later delivery
+failure). It starts in dry-run; replies from customers keep arriving exactly as before. Setup, tests and
+rollback: [docs/whatsapp-updates-setup.md](docs/whatsapp-updates-setup.md).

@@ -2,7 +2,9 @@
 
 The parser is deliberately tolerant: Meta adds fields over time, phone numbers may be absent
 (username / business-scoped user id era), and unknown message types are still forwarded.
-Delivery receipts (``value.statuses``) are counted but never turned into messages.
+Delivery receipts (``value.statuses``) are counted and returned as :class:`StatusEvent` objects (the
+"WhatsApp updates from email" feature uses them to report failed deliveries of what it sent), but they
+are never turned into messages.
 """
 
 from __future__ import annotations
@@ -221,14 +223,26 @@ class InboundMessage:
 
 
 @dataclass(slots=True)
+class StatusEvent:
+    """One delivery receipt (``value.statuses[]``) for a message the business sent."""
+
+    wamid: str
+    status: str  # trimmed and lower-cased: sent, delivered, read, failed, ... ("" when missing)
+    recipient_id: str | None
+    timestamp: int
+    errors: list[MessageError] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class ParsedWebhook:
     messages: list[InboundMessage] = field(default_factory=list)
-    statuses: int = 0
+    statuses: int = 0  # number of value.statuses[] entries, malformed ones included
     skipped_messages: int = 0
     skipped_phone_number_ids: set[str] = field(default_factory=set)
     other_fields: list[str] = field(default_factory=list)
     value_errors: list[MessageError] = field(default_factory=list)
     object_type: str | None = None
+    status_events: list[StatusEvent] = field(default_factory=list)  # the entries that carry a message id
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -333,6 +347,23 @@ def _parse_referral(obj: Any) -> Referral | None:
 
 def _digits(value: Any) -> str:
     return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def _parse_status(obj: Any) -> StatusEvent | None:
+    """A ``statuses[]`` entry as a :class:`StatusEvent`; None when it carries no message id to match."""
+    if not isinstance(obj, dict):
+        return None
+    wamid = _str(obj.get("id")) or ""
+    if not wamid.strip():
+        return None
+    errors = obj.get("errors")
+    return StatusEvent(
+        wamid=wamid,
+        status=(_str(obj.get("status")) or "").strip().lower(),
+        recipient_id=_str(obj.get("recipient_id")),
+        timestamp=_int(obj.get("timestamp"), 0),
+        errors=[_parse_error(e) for e in errors] if isinstance(errors, list) else [],
+    )
 
 
 def _parse_message(
@@ -440,6 +471,12 @@ def parse_webhook(payload: Any, phone_number_id_filter: str | None = None) -> Pa
                 result.skipped_phone_number_ids.add(_str(metadata.get("phone_number_id")) or "?")
                 continue
             result.statuses += len(value.get("statuses") or [])
+            statuses = value.get("statuses")
+            if isinstance(statuses, list):
+                for status in statuses:
+                    event = _parse_status(status)
+                    if event is not None:
+                        result.status_events.append(event)
             result.value_errors.extend(_parse_error(e) for e in (value.get("errors") or []))
             contacts = [c for c in (value.get("contacts") or []) if isinstance(c, dict)]
             by_wa_id = {_digits(c["wa_id"]): c for c in contacts if _digits(c.get("wa_id"))}

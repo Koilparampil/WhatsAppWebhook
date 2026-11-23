@@ -102,6 +102,8 @@ New-ManagementScope -Name "WhatsApp relay sender" -RecipientRestrictionFilter "U
 # "Application Mail Full Access" = Mail.ReadWrite + Mail.Send. It is needed because any email whose
 # attachment is larger than about 1.9 MB is sent as a draft (plus an upload session from 3 MB).
 # "Application Mail.Send" alone would only work if every attachment stayed under about 1.9 MB.
+# The same role lets the optional "WhatsApp updates from email" feature read and file the command emails
+# in this mailbox (docs/whatsapp-updates-setup.md); nothing more is needed for it.
 New-ManagementRoleAssignment -App <Enterprise app Object ID> -Role "Application Mail Full Access" -CustomResourceScope "WhatsApp relay sender"
 
 # Verify (bypasses the cache): InScope must be True for the relay mailbox and False for any other mailbox
